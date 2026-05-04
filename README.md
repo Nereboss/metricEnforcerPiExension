@@ -1,4 +1,4 @@
-# Metric Enforcer
+# MetricEnforcer
 
 Enforce code quality metrics in agentic coding
 

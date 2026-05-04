@@ -1,11 +1,11 @@
 {
-  "name": "pi-hello-agent-end-extension",
+  "name": "metric-enforcer",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "keywords": ["pi-package"],
   "pi": {
-    "extensions": ["./extensions/hello-agent-end.ts"]
+    "extensions": ["./extensions/metric-enforcer.ts"]
   },
   "peerDependencies": {
     "@mariozechner/pi-coding-agent": "*"
