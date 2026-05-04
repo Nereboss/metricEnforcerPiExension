@@ -1,0 +1,13 @@
+{
+  "name": "pi-hello-agent-end-extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "keywords": ["pi-package"],
+  "pi": {
+    "extensions": ["./extensions/hello-agent-end.ts"]
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*"
+  }
+}
