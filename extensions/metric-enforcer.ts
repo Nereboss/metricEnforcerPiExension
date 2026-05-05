@@ -1,11 +1,11 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { Violation } from "./metric-enforcer/types.js";
 import { loadMetricEnforcerConfig } from "./metric-enforcer/config/loader.js";
+import { runMetricOrchestration } from "./metric-enforcer/orchestrator.js";
 
 const execFileAsync = promisify(execFile);
-const scriptPath = fileURLToPath(new URL("../scripts/agent-end.sh", import.meta.url));
 const MISSING_FILE_HASH = "__MISSING__";
 
 let baselineSnapshot = new Map<string, string>();
@@ -55,20 +55,31 @@ function formatMessageForTouchedFiles(files: string[]): string {
   return `Agent changed files:\n${files.join("\n")}`;
 }
 
-function showConfigWarnings(ctx: any, warning?: string) {
-  if (warning === undefined) return 
-
-  if (ctx.hasUI) {
-    ctx.ui.notify(warning, "warning");
+function formatViolationsSummary(violations: readonly Violation[]): string {
+  if (violations.length === 0) {
+    return "Metric checks passed. No threshold violations found.";
   }
-  console.warn(warning);
+
+  const errorCount = violations.filter((violation) => violation.severity === "error").length;
+  const warningCount = violations.length - errorCount;
+  const previewLimit = 8;
+  const previewLines = violations.slice(0, previewLimit).map((violation) => {
+    const actualValue = Number.isInteger(violation.actual) ? violation.actual.toString() : violation.actual.toFixed(2);
+    const thresholdValue = Number.isInteger(violation.threshold)
+      ? violation.threshold.toString()
+      : violation.threshold.toFixed(2);
+
+    return `${violation.severity.toUpperCase()}: ${violation.filePath} | ${violation.metric}=${actualValue} > ${thresholdValue}`;
+  });
+
+  const moreCount = violations.length - previewLimit;
+  const moreLine = moreCount > 0 ? `\n... and ${moreCount} more violation(s).` : "";
+
+  return `Metric violations found (${errorCount} error, ${warningCount} warning):\n${previewLines.join("\n")}${moreLine}`;
 }
 
-function getEnabledAnalyzers(config: any): string[] {
-  return Object.entries(config.analyzers)
-    .filter(([, analyzerConfig]: any) => analyzerConfig.enabled)
-    .map(([analyzerName]) => analyzerName)
-    .sort((a, b) => a.localeCompare(b));
+function filterExistingFiles(files: readonly string[], snapshot: Map<string, string>): string[] {
+  return files.filter((filePath) => snapshot.has(filePath));
 }
 
 export default function metricEnforcer(pi: ExtensionAPI) {
@@ -99,29 +110,37 @@ export default function metricEnforcer(pi: ExtensionAPI) {
       }
 
       const loadedConfig = await loadMetricEnforcerConfig();
-      const { config, warning, sourcePath } = loadedConfig;
 
-      showConfigWarnings(ctx, warning)
+      if (loadedConfig.warning !== undefined) {
+        if (ctx.hasUI) {
+          ctx.ui.notify(loadedConfig.warning, "warning");
+        }
+        console.warn(loadedConfig.warning);
+      }
 
-      const enabledAnalyzers = getEnabledAnalyzers(config)
+      const existingTouchedFiles = filterExistingFiles(changedByAgent, endSnapshot);
+      const orchestrationResult = await runMetricOrchestration(existingTouchedFiles, loadedConfig.config, {
+        cwd: process.cwd(),
+        execFile: async (command, args, cwd) =>
+          execFileAsync(command, [...args], {
+            cwd,
+            encoding: "utf8",
+            maxBuffer: 20 * 1024 * 1024,
+          }),
+      });
 
       if (ctx.hasUI) {
         ctx.ui.notify(
-          enabledAnalyzers.length === 0
-            ? `Metric config loaded from ${sourcePath}. No analyzers enabled.`
-            : `Metric config loaded from ${sourcePath}. Enabled analyzers: ${enabledAnalyzers.join(", ")}`,
+          orchestrationResult.enabledAnalyzers.length === 0
+            ? `Metric config loaded from ${loadedConfig.sourcePath}. No analyzers enabled.`
+            : `Metric config loaded from ${loadedConfig.sourcePath}. Enabled analyzers: ${orchestrationResult.enabledAnalyzers.join(", ")}`,
           "info",
         );
-      }
 
-      const { stdout, stderr } = await execFileAsync("bash", [scriptPath]);
-      const scriptOutput = stdout.trim() || stderr.trim() || "(script returned no output)";
-
-      if (ctx.hasUI) {
-        ctx.ui.notify(`Script output: ${scriptOutput}`, "info");
+        ctx.ui.notify(formatViolationsSummary(orchestrationResult.violations), "info");
       }
     } catch (error) {
-      const message = `Agent loop ended, but pre-check/script failed: ${error instanceof Error ? error.message : String(error)}`;
+      const message = `Agent loop ended, but metric enforcement failed: ${error instanceof Error ? error.message : String(error)}`;
 
       if (ctx.hasUI) {
         ctx.ui.notify(message, "error");
