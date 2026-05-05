@@ -14,3 +14,8 @@ This extension to the PI coding agent automatically runs
 
 ## TODO: things to put into the "Agents.md" of the extension
 - Try to focus on the code you changed first
+
+
+## You can overwrite the default metrics config.
+
+For that, in your repo create a .pi folder and a file "metric-enforcer-config.json" in it

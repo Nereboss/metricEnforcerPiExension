@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { loadMetricEnforcerConfig } from "./metric-enforcer/config/loader.js";
 
 const execFileAsync = promisify(execFile);
 const scriptPath = fileURLToPath(new URL("../scripts/agent-end.sh", import.meta.url));
@@ -46,12 +47,28 @@ function getChangedFilesBetweenSnapshots(before: Map<string, string>, after: Map
     .sort((a, b) => a.localeCompare(b));
 }
 
-function formatTouchedFiles(files: string[]): string {
+function formatMessageForTouchedFiles(files: string[]): string {
   if (files.length === 0) {
     return "Agent changed no files.";
   }
 
   return `Agent changed files:\n${files.join("\n")}`;
+}
+
+function showConfigWarnings(ctx: any, warning?: string) {
+  if (warning === undefined) return 
+
+  if (ctx.hasUI) {
+    ctx.ui.notify(warning, "warning");
+  }
+  console.warn(warning);
+}
+
+function getEnabledAnalyzers(config: any): string[] {
+  return Object.entries(config.analyzers)
+    .filter(([, analyzerConfig]: any) => analyzerConfig.enabled)
+    .map(([analyzerName]) => analyzerName)
+    .sort((a, b) => a.localeCompare(b));
 }
 
 export default function metricEnforcer(pi: ExtensionAPI) {
@@ -75,10 +92,26 @@ export default function metricEnforcer(pi: ExtensionAPI) {
     try {
       const endSnapshot = await getWorkingTreeSnapshot();
       const changedByAgent = getChangedFilesBetweenSnapshots(baselineSnapshot, endSnapshot);
-      const filesMessage = formatTouchedFiles(changedByAgent);
+      const touchedFilesMessage = formatMessageForTouchedFiles(changedByAgent);
 
       if (ctx.hasUI) {
-        ctx.ui.notify(filesMessage, "info");
+        ctx.ui.notify(touchedFilesMessage, "info");
+      }
+
+      const loadedConfig = await loadMetricEnforcerConfig();
+      const { config, warning, sourcePath } = loadedConfig;
+
+      showConfigWarnings(ctx, warning)
+
+      const enabledAnalyzers = getEnabledAnalyzers(config)
+
+      if (ctx.hasUI) {
+        ctx.ui.notify(
+          enabledAnalyzers.length === 0
+            ? `Metric config loaded from ${sourcePath}. No analyzers enabled.`
+            : `Metric config loaded from ${sourcePath}. Enabled analyzers: ${enabledAnalyzers.join(", ")}`,
+          "info",
+        );
       }
 
       const { stdout, stderr } = await execFileAsync("bash", [scriptPath]);

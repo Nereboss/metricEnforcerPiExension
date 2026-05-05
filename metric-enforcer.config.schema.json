@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/metric-enforcer.config.schema.json",
+  "title": "MetricEnforcerConfig",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["analyzers", "thresholds"],
+  "properties": {
+    "analyzers": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "$ref": "#/$defs/analyzerConfig" }
+    },
+    "thresholds": { "$ref": "#/$defs/thresholdConfig" }
+  },
+  "$defs": {
+    "analyzerConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "command": { "type": "string" },
+        "args": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "options": {
+          "type": "object",
+          "additionalProperties": {
+            "type": ["string", "number", "boolean", "null"]
+          }
+        }
+      }
+    },
+    "thresholdConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["global"],
+      "properties": {
+        "global": { "$ref": "#/$defs/metricRuleMap" },
+        "filePatterns": {
+          "type": "object",
+          "propertyNames": { "minLength": 1 },
+          "additionalProperties": { "$ref": "#/$defs/metricRuleMap" }
+        }
+      }
+    },
+    "metricRuleMap": {
+      "type": "object",
+      "propertyNames": { "minLength": 1 },
+      "additionalProperties": { "$ref": "#/$defs/metricRule" }
+    },
+    "metricRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "warning": { "type": "number" },
+        "error": { "type": "number" }
+      },
+      "anyOf": [{ "required": ["warning"] }, { "required": ["error"] }]
+    }
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "analyzers": {
+    "ccsh": {
+      "enabled": true,
+      "command": "ccsh",
+      "args": ["--ci"],
+      "options": {
+        "format": "json"
+      }
+    }
+  },
+  "thresholds": {
+    "global": {
+      "complexity": {
+        "warning": 10,
+        "error": 15
+      },
+      "rloc": {
+        "warning": 150,
+        "error": 250
+      }
+    },
+    "filePatterns": {
+      "*.ts": {
+        "complexity": {
+          "warning": 8,
+          "error": 12
+        }
+      }
+    }
+  }
+}
