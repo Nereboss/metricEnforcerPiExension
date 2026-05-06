@@ -3,11 +3,11 @@ import type { AnalyzerResult, Violation } from "./types.ts";
 import type { AnalyzerPlugin } from "./analyzers/analyzer-plugin.ts";
 import { ccshAnalyzerPlugin, type CcshAnalyzerContext } from "./analyzers/ccsh-analyzer.ts";
 import { evaluateAnalyzerResults } from "./rules/evaluator.ts";
+import { getErrorCode } from "./utils.ts";
 
 interface MetricAnalyzerExecution {
   selectedFiles: string[];
-  result: AnalyzerResult;
-  skipped: boolean;
+  result?: AnalyzerResult;
   warning?: string;
 }
 
@@ -31,7 +31,9 @@ export async function runMetricOrchestration(
     enabledPlugins.map((plugin) => runPluginExecution(plugin, touchedFiles, config, ctx)),
   );
 
-  const analyzerResults = executions.filter((execution) => !execution.skipped).map((execution) => execution.result);
+  const analyzerResults = executions
+    .map((execution) => execution.result)
+    .filter((result): result is AnalyzerResult => result !== undefined);
   const analyzedFiles = [...new Set(executions.flatMap((execution) => execution.selectedFiles))].sort((a, b) =>
     a.localeCompare(b),
   );
@@ -61,11 +63,6 @@ async function runPluginExecution(
   if (selectedFiles.length === 0) {
     return {
       selectedFiles,
-      result: {
-        analyzer: plugin.name,
-        files: [],
-      },
-      skipped: true,
     };
   }
 
@@ -75,18 +72,12 @@ async function runPluginExecution(
     return {
       selectedFiles,
       result,
-      skipped: false,
     };
   } catch (error) {
     if (isExecutableNotFoundError(error)) {
       const missingExecutable = error.path ?? plugin.name;
       return {
         selectedFiles,
-        result: {
-          analyzer: plugin.name,
-          files: [],
-        },
-        skipped: true,
         warning: `Analyzer "${plugin.name}" skipped: executable "${missingExecutable}" was not found in PATH.`,
       };
     }
@@ -96,12 +87,7 @@ async function runPluginExecution(
 }
 
 function isExecutableNotFoundError(error: unknown): error is NodeJS.ErrnoException {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error as NodeJS.ErrnoException).code === "ENOENT"
-  );
+  return getErrorCode(error) === "ENOENT";
 }
 
 export function filterAnalyzerResultsByTouchedFiles(

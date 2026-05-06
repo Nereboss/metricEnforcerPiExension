@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import type { MetricEnforcerConfig } from "./types.ts";
 import { validateMetricEnforcerConfig } from "./validate-config.ts";
+import { getErrorCode } from "../utils.ts";
 
 const DEFAULT_CONFIG_FILE_NAME = "metric-enforcer.config.json";
 const BUNDLED_DEFAULT_CONFIG_RELATIVE_PATH = "../../../metric-enforcer.config.json";
@@ -76,12 +77,8 @@ async function readConfigRequired(path: string): Promise<string> {
 }
 
 function isMissingFileError(error: unknown): error is NodeJS.ErrnoException {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error as NodeJS.ErrnoException).code === "ENOENT"
-  );
+  return getErrorCode(error) === "ENOENT";
 }
+
 
 export { DEFAULT_CONFIG_FILE_NAME };

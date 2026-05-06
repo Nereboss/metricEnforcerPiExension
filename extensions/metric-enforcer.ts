@@ -4,11 +4,12 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import type { Violation } from "./metric-enforcer/types.ts";
 import { loadMetricEnforcerConfig } from "./metric-enforcer/config/loader.ts";
 import { runMetricOrchestration } from "./metric-enforcer/orchestrator.ts";
+import { formatMetricValue } from "./metric-enforcer/utils.ts";
 
 const execFileAsync = promisify(execFile);
 const MISSING_FILE_HASH = "__MISSING__";
 
-let baselineSnapshot = new Map<string, string>();
+let baselineSnapshot = createEmptySnapshot();
 
 function parseLines(output: string): string[] {
   return output
@@ -17,7 +18,7 @@ function parseLines(output: string): string[] {
     .filter((line) => line.length > 0);
 }
 
-async function runGit(args: string[]) {
+async function runGit(args: readonly string[]) {
   return execFileAsync("git", args, { encoding: "utf8" });
 }
 
@@ -64,10 +65,8 @@ function formatViolationsSummary(violations: readonly Violation[]): string {
   const warningCount = violations.length - errorCount;
   const previewLimit = 8;
   const previewLines = violations.slice(0, previewLimit).map((violation) => {
-    const actualValue = Number.isInteger(violation.actual) ? violation.actual.toString() : violation.actual.toFixed(2);
-    const thresholdValue = Number.isInteger(violation.threshold)
-      ? violation.threshold.toString()
-      : violation.threshold.toFixed(2);
+    const actualValue = formatMetricValue(violation.actual);
+    const thresholdValue = formatMetricValue(violation.threshold);
 
     return `${violation.severity.toUpperCase()}: ${violation.filePath} | ${violation.metric}=${actualValue} > ${thresholdValue}`;
   });
@@ -76,6 +75,10 @@ function formatViolationsSummary(violations: readonly Violation[]): string {
   const moreLine = moreCount > 0 ? `\n... and ${moreCount} more violation(s).` : "";
 
   return `Metric violations found (${errorCount} error, ${warningCount} warning):\n${previewLines.join("\n")}${moreLine}`;
+}
+
+function createEmptySnapshot(): Map<string, string> {
+  return new Map<string, string>();
 }
 
 function filterExistingFiles(files: readonly string[], snapshot: Map<string, string>): string[] {
@@ -88,7 +91,7 @@ export default function metricEnforcer(pi: ExtensionAPI) {
       await runGit(["rev-parse", "--is-inside-work-tree"]);
       baselineSnapshot = await getWorkingTreeSnapshot();
     } catch (error) {
-      baselineSnapshot = new Map<string, string>();
+      baselineSnapshot = createEmptySnapshot();
       const message = `Could not capture git baseline: ${error instanceof Error ? error.message : String(error)}`;
 
       if (ctx.hasUI) {
@@ -152,7 +155,7 @@ export default function metricEnforcer(pi: ExtensionAPI) {
 
       console.error(`[metric-enforcer] ${message}`);
     } finally {
-      baselineSnapshot = new Map<string, string>();
+      baselineSnapshot = createEmptySnapshot();
     }
   });
 }

@@ -137,9 +137,7 @@ function extractNumericMetrics(attributes: Record<string, unknown> | undefined):
 }
 
 function resolveConfiguredArgs(configuredArgs: readonly string[], files: readonly string[]): string[] {
-  const includesFilesPlaceholder = configuredArgs.includes(FILES_PLACEHOLDER);
-
-  if (!includesFilesPlaceholder) {
+  if (!configuredArgs.includes(FILES_PLACEHOLDER)) {
     return [...configuredArgs];
   }
 
