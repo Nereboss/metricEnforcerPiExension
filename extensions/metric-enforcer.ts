@@ -10,6 +10,7 @@ const execFileAsync = promisify(execFile);
 const MISSING_FILE_HASH = "__MISSING__";
 
 let baselineSnapshot = createEmptySnapshot();
+let isMetricEnforcerActive = true;
 
 function parsePorcelainV1ZPaths(output: string): string[] {
   const entries = output.split("\0").filter((entry) => entry.length > 0);
@@ -107,7 +108,46 @@ function filterExistingFiles(files: readonly string[], snapshot: Map<string, str
 }
 
 export default function metricEnforcer(pi: ExtensionAPI) {
+  pi.registerCommand("activateMetricEnforcer", {
+    description: "Activate metric enforcement for upcoming agent runs",
+    handler: async (_args, ctx) => {
+      if (isMetricEnforcerActive) {
+        if (ctx.hasUI) {
+          ctx.ui.notify("MetricEnforcer is already active.", "info");
+        }
+        return;
+      }
+
+      isMetricEnforcerActive = true;
+
+      if (ctx.hasUI) {
+        ctx.ui.notify("MetricEnforcer activated.", "success");
+      }
+    },
+  });
+
+  pi.registerCommand("deactivateMetricEnforcer", {
+    description: "Deactivate metric enforcement for upcoming agent runs",
+    handler: async (_args, ctx) => {
+      if (!isMetricEnforcerActive) {
+        if (ctx.hasUI) {
+          ctx.ui.notify("MetricEnforcer is already deactivated.", "info");
+        }
+        return;
+      }
+
+      isMetricEnforcerActive = false;
+      baselineSnapshot = createEmptySnapshot();
+
+      if (ctx.hasUI) {
+        ctx.ui.notify("MetricEnforcer deactivated.", "success");
+      }
+    },
+  });
+
   pi.on("agent_start", async (_event, ctx) => {
+    if (!isMetricEnforcerActive) return;
+
     try {
       await runGit(["rev-parse", "--is-inside-work-tree"]);
       baselineSnapshot = await getWorkingTreeSnapshot();
@@ -124,6 +164,8 @@ export default function metricEnforcer(pi: ExtensionAPI) {
   });
 
   pi.on("agent_end", async (_event, ctx) => {
+    if (!isMetricEnforcerActive) return;
+
     try {
       const endSnapshot = await getWorkingTreeSnapshot();
       const changedByAgent = getChangedFilesBetweenSnapshots(baselineSnapshot, endSnapshot);

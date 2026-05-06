@@ -11,6 +11,7 @@ const execFileAsync = promisify(execFile);
 
 class FakePi {
   private handlers = new Map<string, Array<(event: unknown, ctx: TestContext) => Promise<void>>>();
+  private commands = new Map<string, (args: string, ctx: TestContext) => Promise<void>>();
 
   on(eventName: string, handler: (event: unknown, ctx: TestContext) => Promise<void>): void {
     const existing = this.handlers.get(eventName) ?? [];
@@ -18,11 +19,25 @@ class FakePi {
     this.handlers.set(eventName, existing);
   }
 
+  registerCommand(_name: string, options: { handler: (args: string, ctx: TestContext) => Promise<void> }): void {
+    this.commands.set(_name, options.handler);
+  }
+
   async emit(eventName: string, ctx: TestContext): Promise<void> {
     const eventHandlers = this.handlers.get(eventName) ?? [];
     for (const handler of eventHandlers) {
       await handler({}, ctx);
     }
+  }
+
+  async invokeCommand(name: string, args: string, ctx: TestContext): Promise<void> {
+    const handler = this.commands.get(name);
+
+    if (handler === undefined) {
+      throw new Error(`Missing command handler for: ${name}`);
+    }
+
+    await handler(args, ctx);
   }
 
   getRegisteredEventNames(): string[] {
@@ -47,6 +62,53 @@ test("metric-enforcer registers expected lifecycle handlers", () => {
   metricEnforcer(fakePi as never);
 
   assert.deepEqual(fakePi.getRegisteredEventNames(), ["agent_end", "agent_start"]);
+});
+
+
+test("deactivateMetricEnforcer disables metric checks until reactivated", async () => {
+  const previousCwd = process.cwd();
+  const tempRepo = await mkdtemp(join(tmpdir(), "metric-enforcer-toggle-test-"));
+
+  try {
+    process.chdir(tempRepo);
+    await execFileAsync("git", ["init"]);
+    await writeFile("sample.ts", "export const x = 1;\n", "utf8");
+
+    const notifications: Notification[] = [];
+    const ctx: TestContext = {
+      hasUI: true,
+      ui: {
+        notify(message, level) {
+          notifications.push({ message, level });
+        },
+      },
+    };
+
+    const fakePi = new FakePi();
+    metricEnforcer(fakePi as never);
+
+    await fakePi.invokeCommand("deactivateMetricEnforcer", "", ctx);
+    await fakePi.emit("agent_start", ctx);
+    await writeFile("sample.ts", "export const x = 2;\n", "utf8");
+    await fakePi.emit("agent_end", ctx);
+
+    const deactivatedMessages = notifications.map((entry) => entry.message);
+    assert.ok(deactivatedMessages.some((message) => message.includes("MetricEnforcer deactivated.")));
+    assert.equal(deactivatedMessages.some((message) => message.includes("Metric checks passed.")), false);
+
+    notifications.length = 0;
+
+    await fakePi.invokeCommand("activateMetricEnforcer", "", ctx);
+    await fakePi.emit("agent_start", ctx);
+    await writeFile("sample.ts", "export const x = 3;\n", "utf8");
+    await fakePi.emit("agent_end", ctx);
+
+    const reactivatedMessages = notifications.map((entry) => entry.message);
+    assert.ok(reactivatedMessages.some((message) => message.includes("MetricEnforcer activated.")));
+    assert.ok(reactivatedMessages.some((message) => message.includes("Metric checks passed.")));
+  } finally {
+    process.chdir(previousCwd);
+  }
 });
 
 test("metric-enforcer happy path with disabled analyzer reports successful checks", async () => {
