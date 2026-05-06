@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ccshAnalyzerPlugin, parseCcshUnifiedParserJson } from "../extensions/metric-enforcer/analyzers/ccsh-analyzer.ts";
@@ -52,16 +52,24 @@ test("ccsh parser maps unifiedparser JSON into normalized file metrics", () => {
   });
 });
 
-test("ccsh analyzer executes unifiedparser command and returns normalized result", async () => {
+test("ccsh analyzer executes configured command and reads JSON from configured output file", async () => {
   let observedCommand = "";
   let observedArgs: readonly string[] = [];
+
+  const projectDir = await mkdtemp(join(tmpdir(), "metric-enforcer-ccsh-unit-"));
 
   const config: MetricEnforcerConfig = {
     analyzers: {
       ccsh: {
         enabled: true,
         command: "ccsh-bin",
-        args: ["unifiedparser", "--verbose", "$FILES"],
+        args: [
+          "unifiedparser",
+          "--verbose",
+          "$FILES",
+          "--base-file=.pi/metricEnforcer/cachedAnalysis.cc.json",
+          "--output-file=.pi/metricEnforcer/cachedAnalysis.cc.json",
+        ],
       },
     },
     thresholds: {
@@ -74,15 +82,48 @@ test("ccsh analyzer executes unifiedparser command and returns normalized result
     execFile: async (command, args) => {
       observedCommand = command;
       observedArgs = args;
-      return { stdout: sampleCcshUnifiedParserJson, stderr: "" };
+      const outputPathArg = args.find((arg) => arg.startsWith("--output-file="));
+      assert.ok(outputPathArg);
+      const outputPath = outputPathArg.replace("--output-file=", "");
+      await writeFile(join(projectDir, outputPath), sampleCcshUnifiedParserJson, "utf8");
+      return { stdout: "", stderr: "" };
     },
-    cwd: process.cwd(),
+    cwd: projectDir,
   });
 
   assert.equal(observedCommand, "ccsh-bin");
-  assert.deepEqual(observedArgs, ["unifiedparser", "--verbose", "."]);
+  assert.ok(observedArgs.includes("unifiedparser"));
+  assert.ok(observedArgs.includes("--verbose"));
+  assert.ok(observedArgs.includes("."));
+  assert.ok(observedArgs.some((arg) => arg.startsWith("--base-file=.pi/metricEnforcer/cachedAnalysis.cc.json")));
+  assert.ok(observedArgs.some((arg) => arg.startsWith("--output-file=.pi/metricEnforcer/cachedAnalysis.cc.json")));
   assert.equal(result.analyzer, "ccsh");
   assert.equal(result.files.length, 1);
+});
+
+test("ccsh analyzer fails when output-file is missing in configured args", async () => {
+  const config: MetricEnforcerConfig = {
+    analyzers: {
+      ccsh: {
+        enabled: true,
+        command: "ccsh-bin",
+        args: ["unifiedparser", "."],
+      },
+    },
+    thresholds: {
+      global: {},
+      filePatterns: {},
+    },
+  };
+
+  await assert.rejects(
+    () =>
+      ccshAnalyzerPlugin.analyze(["."], config, {
+        execFile: async () => ({ stdout: "", stderr: "" }),
+        cwd: process.cwd(),
+      }),
+    /requires -o\/--output-file in config args/,
+  );
 });
 
 test("ccsh analyzer can run real ccsh unifiedparser command when ccsh is available", async (t) => {
@@ -99,7 +140,12 @@ test("ccsh analyzer can run real ccsh unifiedparser command when ccsh is availab
       ccsh: {
         enabled: true,
         command: "ccsh",
-        args: ["unifiedparser", "."],
+        args: [
+          "unifiedparser",
+          ".",
+          "--output-file=.pi/metricEnforcer/cachedAnalysis.cc.json",
+          "--not-compressed",
+        ],
       },
     },
     thresholds: {

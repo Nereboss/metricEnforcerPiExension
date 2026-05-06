@@ -59,16 +59,16 @@ test("metric-enforcer happy path with disabled analyzer reports successful check
 
     await writeFile("sample.ts", "export const x = 1;\n", "utf8");
 
-    await mkdir(".pi", { recursive: true });
+    await mkdir(".pi/metricEnforcer", { recursive: true });
     await writeFile(
-      ".pi/metric-enforcer.config.json",
+      ".pi/metricEnforcer/metric-enforcer.config.json",
       JSON.stringify(
         {
           analyzers: {
             ccsh: {
               enabled: false,
               command: "ccsh",
-              args: ["unifiedparser", "$FILES"],
+              args: ["unifiedparser", ".", "--output-file=.pi/metricEnforcer/cachedAnalysis.cc.json"],
             },
           },
           thresholds: {

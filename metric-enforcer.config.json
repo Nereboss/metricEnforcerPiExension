@@ -3,7 +3,13 @@
     "ccsh": {
       "enabled": true,
       "command": "ccsh",
-      "args": ["unifiedparser", "."]
+      "args": [
+        "unifiedparser",
+        ".",
+        "--base-file=.pi/metricEnforcer/cachedAnalysis.cc.json",
+        "--output-file=.pi/metricEnforcer/cachedAnalysis.cc.json",
+        "--not-compressed"
+      ]
     }
   },
   "thresholds": {
@@ -24,7 +30,7 @@
           "error": 12
         },
         "rloc": {
-          "warning": 12,
+          "warning": 2,
           "error": 16
         }
       }

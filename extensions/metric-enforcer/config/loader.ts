@@ -17,7 +17,7 @@ export async function loadMetricEnforcerConfig(
   cwd: string = process.cwd(),
   configFileName: string = DEFAULT_CONFIG_FILE_NAME,
 ): Promise<LoadedMetricEnforcerConfig> {
-  const projectConfigPath = join(cwd, ".pi", configFileName);
+  const projectConfigPath = join(cwd, ".pi", "metricEnforcer", configFileName);
   const projectConfig = await readConfigIfExists(projectConfigPath);
 
   if (projectConfig !== undefined) {

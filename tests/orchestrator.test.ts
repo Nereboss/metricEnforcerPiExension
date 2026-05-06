@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { runMetricOrchestration } from "../extensions/metric-enforcer/orchestrator.ts";
 import type { MetricEnforcerConfig } from "../extensions/metric-enforcer/config/types.ts";
 
@@ -36,7 +38,7 @@ test("orchestrator runs enabled ccsh analyzer and produces violations", async ()
       ccsh: {
         enabled: true,
         command: "ccsh",
-        args: ["unifiedparser", "$FILES"],
+        args: ["unifiedparser", ".", "--output-file=.pi/metricEnforcer/cachedAnalysis.cc.json"],
       },
     },
     thresholds: {
@@ -48,15 +50,88 @@ test("orchestrator runs enabled ccsh analyzer and produces violations", async ()
   };
 
   const result = await runMetricOrchestration(["."], config, {
-    execFile: async () => ({ stdout: sampleCcshUnifiedParserJson, stderr: "" }),
+    execFile: async (_command, args, cwd) => {
+      const outputFileArg = args.find((arg) => arg.startsWith("--output-file="));
+      assert.ok(outputFileArg);
+      const outputFilePath = outputFileArg.replace("--output-file=", "");
+      await writeFile(join(cwd ?? process.cwd(), outputFilePath), sampleCcshUnifiedParserJson, "utf8");
+      return { stdout: "", stderr: "" };
+    },
     cwd: process.cwd(),
   });
 
   assert.deepEqual(result.enabledAnalyzers, ["ccsh"]);
-  assert.equal(result.analyzerResults.length, 1);
-  assert.equal(result.violations.length, 1);
-  assert.equal(result.violations[0].severity, "error");
+  assert.equal(result.analyzerResults.length, 0);
+  assert.equal(result.violations.length, 0);
   assert.deepEqual(result.analyzerWarnings, []);
+});
+
+test("orchestrator reports violations only for touched files", async () => {
+  const config: MetricEnforcerConfig = {
+    analyzers: {
+      ccsh: {
+        enabled: true,
+        command: "ccsh",
+        args: ["unifiedparser", ".", "--output-file=.pi/metricEnforcer/cachedAnalysis.cc.json"],
+      },
+    },
+    thresholds: {
+      global: {
+        complexity: { warning: 1, error: 2 },
+      },
+      filePatterns: {},
+    },
+  };
+
+  const result = await runMetricOrchestration(["src/a.ts"], config, {
+    execFile: async (_command, args, cwd) => {
+      const outputFileArg = args.find((arg) => arg.startsWith("--output-file="));
+      assert.ok(outputFileArg);
+      const outputFilePath = outputFileArg.replace("--output-file=", "");
+      await writeFile(
+        join(cwd ?? process.cwd(), outputFilePath),
+        JSON.stringify({
+          data: {
+            nodes: [
+              {
+                name: "root",
+                type: "Folder",
+                children: [
+                  {
+                    name: "src",
+                    type: "Folder",
+                    children: [
+                      {
+                        name: "a.ts",
+                        type: "File",
+                        attributes: { complexity: 12 },
+                        children: [],
+                      },
+                      {
+                        name: "b.ts",
+                        type: "File",
+                        attributes: { complexity: 20 },
+                        children: [],
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        }),
+        "utf8",
+      );
+      return { stdout: "", stderr: "" };
+    },
+    cwd: process.cwd(),
+  });
+
+  assert.equal(result.analyzerResults.length, 1);
+  assert.equal(result.analyzerResults[0].files.length, 1);
+  assert.equal(result.analyzerResults[0].files[0].filePath, "src/a.ts");
+  assert.equal(result.violations.length, 1);
+  assert.equal(result.violations[0].filePath, "src/a.ts");
 });
 
 test("orchestrator skips analyzer when executable is missing", async () => {
@@ -65,7 +140,7 @@ test("orchestrator skips analyzer when executable is missing", async () => {
       ccsh: {
         enabled: true,
         command: "ccsh",
-        args: ["unifiedparser", "$FILES"],
+        args: ["unifiedparser", ".", "--output-file=.pi/metricEnforcer/cachedAnalysis.cc.json"],
       },
     },
     thresholds: {

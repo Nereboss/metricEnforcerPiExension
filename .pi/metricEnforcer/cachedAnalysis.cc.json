@@ -1,0 +1,1 @@
+{"data":{"nodes":[{"name":"root","type":"Folder","children":[{"name":"src","type":"Folder","children":[{"name":"a.ts","type":"File","attributes":{"complexity":12},"children":[]},{"name":"b.ts","type":"File","attributes":{"complexity":20},"children":[]}]}]}]}}

@@ -39,12 +39,14 @@ export async function runMetricOrchestration(
     .map((execution) => execution.warning)
     .filter((warning): warning is string => warning !== undefined);
 
+  const touchedFileAnalyzerResults = filterAnalyzerResultsByTouchedFiles(analyzerResults, touchedFiles);
+
   return {
     enabledAnalyzers: enabledPlugins.map((plugin) => plugin.name),
     analyzedFiles,
-    analyzerResults,
+    analyzerResults: touchedFileAnalyzerResults,
     analyzerWarnings,
-    violations: evaluateAnalyzerResults(analyzerResults, config.thresholds),
+    violations: evaluateAnalyzerResults(touchedFileAnalyzerResults, config.thresholds),
   };
 }
 
@@ -100,4 +102,18 @@ function isExecutableNotFoundError(error: unknown): error is NodeJS.ErrnoExcepti
     "code" in error &&
     (error as NodeJS.ErrnoException).code === "ENOENT"
   );
+}
+
+export function filterAnalyzerResultsByTouchedFiles(
+  analyzerResults: readonly AnalyzerResult[],
+  touchedFiles: readonly string[],
+): AnalyzerResult[] {
+  const touchedFilePathSet = new Set(touchedFiles);
+
+  return analyzerResults
+    .map((result) => ({
+      analyzer: result.analyzer,
+      files: result.files.filter((fileMetrics) => touchedFilePathSet.has(fileMetrics.filePath)),
+    }))
+    .filter((result) => result.files.length > 0);
 }

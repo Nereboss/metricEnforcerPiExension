@@ -1,3 +1,5 @@
+import { mkdir, readFile } from "node:fs/promises";
+import { dirname, isAbsolute, join } from "node:path";
 import type { MetricEnforcerConfig } from "../config/types.ts";
 import type { AnalyzerResult, FileMetrics } from "../types.ts";
 import type { AnalyzerPlugin } from "./analyzer-plugin.ts";
@@ -34,11 +36,7 @@ export const ccshAnalyzerPlugin: AnalyzerPlugin<MetricEnforcerConfig, CcshAnalyz
     return [...files];
   },
 
-  async analyze(
-    files: readonly string[],
-    config: MetricEnforcerConfig,
-    ctx: CcshAnalyzerContext,
-  ): Promise<AnalyzerResult> {
+  async analyze(files: readonly string[], config: MetricEnforcerConfig, ctx: CcshAnalyzerContext): Promise<AnalyzerResult> {
     const analyzerConfig = config.analyzers[CCSH_ANALYZER_NAME];
     if (analyzerConfig === undefined) {
       throw new Error(`[metric-enforcer] Analyzer config "${CCSH_ANALYZER_NAME}" is missing.`);
@@ -46,20 +44,37 @@ export const ccshAnalyzerPlugin: AnalyzerPlugin<MetricEnforcerConfig, CcshAnalyz
 
     const command = analyzerConfig.command;
     if (command === undefined || command.trim().length === 0) {
-      throw new Error(
-        `[metric-enforcer] Analyzer "${CCSH_ANALYZER_NAME}" requires "command" in config (for example "ccsh").`,
-      );
+      throw new Error(`[metric-enforcer] Analyzer "${CCSH_ANALYZER_NAME}" requires "command" in config.`);
     }
 
     const cliArgs = resolveConfiguredArgs(analyzerConfig.args ?? [], files);
-    const { stdout, stderr } = await ctx.execFile(command, cliArgs, ctx.cwd);
-    const rawOutput = stdout.trim().length > 0 ? stdout : stderr;
+    const workingDirectory = ctx.cwd ?? process.cwd();
+    const outputFilePath = getConfiguredOutputFilePath(cliArgs, workingDirectory);
 
-    if (rawOutput.trim().length === 0) {
+    if (outputFilePath === undefined) {
+      throw new Error(
+        `[metric-enforcer] Analyzer "${CCSH_ANALYZER_NAME}" requires -o/--output-file in config args so analysis can be cached.`,
+      );
+    }
+
+    await mkdir(dirname(outputFilePath), { recursive: true });
+
+    await ctx.execFile(command, cliArgs, workingDirectory);
+
+    let analysisOutput: string;
+    try {
+      analysisOutput = await readFile(outputFilePath, "utf8");
+    } catch (error) {
+      throw new Error(
+        `[metric-enforcer] ${CCSH_ANALYZER_NAME} did not create readable output at ${outputFilePath}. Ensure the configured output is uncompressed (for example add --not-compressed/-nc). ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+
+    if (analysisOutput.trim().length === 0) {
       throw new Error(`[metric-enforcer] ${CCSH_ANALYZER_NAME} returned no parseable output.`);
     }
 
-    return parseCcshUnifiedParserJson(rawOutput);
+    return parseCcshUnifiedParserJson(analysisOutput);
   },
 };
 
@@ -129,4 +144,24 @@ function resolveConfiguredArgs(configuredArgs: readonly string[], files: readonl
   }
 
   return configuredArgs.flatMap((arg) => (arg === FILES_PLACEHOLDER ? [...files] : [arg]));
+}
+
+function getConfiguredOutputFilePath(args: readonly string[], cwd: string): string | undefined {
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+
+    if ((arg === "-o" || arg === "--output-file") && args[index + 1] !== undefined) {
+      return resolvePath(cwd, args[index + 1]);
+    }
+
+    if (arg.startsWith("--output-file=") || arg.startsWith("-o=")) {
+      return resolvePath(cwd, arg.split("=", 2)[1]);
+    }
+  }
+
+  return undefined;
+}
+
+function resolvePath(cwd: string, candidatePath: string): string {
+  return isAbsolute(candidatePath) ? candidatePath : join(cwd, candidatePath);
 }
