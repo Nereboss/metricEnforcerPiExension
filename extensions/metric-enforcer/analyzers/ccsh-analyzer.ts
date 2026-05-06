@@ -23,7 +23,6 @@ export interface CcshAnalyzerContext {
 }
 
 const CCSH_ANALYZER_NAME = "ccsh";
-const FILES_PLACEHOLDER = "$FILES";
 
 export const ccshAnalyzerPlugin: AnalyzerPlugin<MetricEnforcerConfig, CcshAnalyzerContext> = {
   name: CCSH_ANALYZER_NAME,
@@ -36,7 +35,7 @@ export const ccshAnalyzerPlugin: AnalyzerPlugin<MetricEnforcerConfig, CcshAnalyz
     return [...files];
   },
 
-  async analyze(files: readonly string[], config: MetricEnforcerConfig, ctx: CcshAnalyzerContext): Promise<AnalyzerResult> {
+  async analyze(_files: readonly string[], config: MetricEnforcerConfig, ctx: CcshAnalyzerContext): Promise<AnalyzerResult> {
     const analyzerConfig = config.analyzers[CCSH_ANALYZER_NAME];
     if (analyzerConfig === undefined) {
       throw new Error(`[metric-enforcer] Analyzer config "${CCSH_ANALYZER_NAME}" is missing.`);
@@ -47,7 +46,7 @@ export const ccshAnalyzerPlugin: AnalyzerPlugin<MetricEnforcerConfig, CcshAnalyz
       throw new Error(`[metric-enforcer] Analyzer "${CCSH_ANALYZER_NAME}" requires "command" in config.`);
     }
 
-    const cliArgs = resolveConfiguredArgs(analyzerConfig.args ?? [], files);
+    const cliArgs = [...(analyzerConfig.args ?? [])];
     const workingDirectory = ctx.cwd ?? process.cwd();
     const outputFilePath = getConfiguredOutputFilePath(cliArgs, workingDirectory);
 
@@ -134,14 +133,6 @@ function extractNumericMetrics(attributes: Record<string, unknown> | undefined):
   return Object.fromEntries(
     Object.entries(attributes).filter(([, value]) => typeof value === "number" && Number.isFinite(value)),
   ) as Record<string, number>;
-}
-
-function resolveConfiguredArgs(configuredArgs: readonly string[], files: readonly string[]): string[] {
-  if (!configuredArgs.includes(FILES_PLACEHOLDER)) {
-    return [...configuredArgs];
-  }
-
-  return configuredArgs.flatMap((arg) => (arg === FILES_PLACEHOLDER ? [...files] : [arg]));
 }
 
 function getConfiguredOutputFilePath(args: readonly string[], cwd: string): string | undefined {

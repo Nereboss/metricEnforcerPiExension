@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ccshAnalyzerPlugin, parseCcshUnifiedParserJson } from "../extensions/metric-enforcer/analyzers/ccsh-analyzer.ts";
@@ -65,8 +65,8 @@ test("ccsh analyzer executes configured command and reads JSON from configured o
         command: "ccsh-bin",
         args: [
           "unifiedparser",
+          ".",
           "--verbose",
-          "$FILES",
           "--base-file=.pi/metricEnforcer/cachedAnalysis.cc.json",
           "--output-file=.pi/metricEnforcer/cachedAnalysis.cc.json",
         ],

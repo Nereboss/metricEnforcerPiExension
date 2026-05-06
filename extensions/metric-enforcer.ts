@@ -11,11 +11,31 @@ const MISSING_FILE_HASH = "__MISSING__";
 
 let baselineSnapshot = createEmptySnapshot();
 
-function parseLines(output: string): string[] {
-  return output
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
+function parsePorcelainV1ZPaths(output: string): string[] {
+  const entries = output.split("\0").filter((entry) => entry.length > 0);
+  const changedPaths = new Set<string>();
+
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index];
+    const status = entry.slice(0, 2);
+    const primaryPath = entry.slice(3);
+
+    if (primaryPath.length > 0) {
+      changedPaths.add(primaryPath);
+    }
+
+    const isRenameOrCopy = status.includes("R") || status.includes("C");
+
+    if (isRenameOrCopy && entries[index + 1] !== undefined) {
+      const renamedOrCopiedPath = entries[index + 1];
+      if (renamedOrCopiedPath.length > 0) {
+        changedPaths.add(renamedOrCopiedPath);
+      }
+      index += 1;
+    }
+  }
+
+  return [...changedPaths].sort((a, b) => a.localeCompare(b));
 }
 
 async function runGit(args: readonly string[]) {
@@ -23,11 +43,12 @@ async function runGit(args: readonly string[]) {
 }
 
 async function getWorkingTreeSnapshot(): Promise<Map<string, string>> {
-  const { stdout } = await runGit(["ls-files", "-co", "--exclude-standard"]);
-  const files = parseLines(stdout).sort((a, b) => a.localeCompare(b));
+  // use --porcelain=v1 to get status output optimized for tool use
+  const { stdout } = await runGit(["status", "--porcelain=v1", "--untracked-files=all", "-z"]);
+  const changedPaths = parsePorcelainV1ZPaths(stdout);
 
   const entries = await Promise.all(
-    files.map(async (filePath) => {
+    changedPaths.map(async (filePath) => {
       try {
         const { stdout: hash } = await runGit(["hash-object", "--", filePath]);
         return [filePath, hash.trim()] as const;
