@@ -1,4 +1,4 @@
-import type { AnalyzerResult } from "../types.js";
+import type { AnalyzerResult } from "../types.ts";
 
 /**
  * Contract for metric analyzer plugins.

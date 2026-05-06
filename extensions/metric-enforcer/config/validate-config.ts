@@ -1,8 +1,7 @@
-import type { MetricRule } from "../types.js";
-import type { AnalyzerConfig, MetricEnforcerConfig } from "./types.js";
+import type { MetricRule } from "../types.ts";
+import type { AnalyzerConfig, MetricEnforcerConfig } from "./types.ts";
 
 type JsonObject = Record<string, unknown>;
-type OptionValue = string | number | boolean | null;
 
 export function validateMetricEnforcerConfig(value: unknown, sourcePath: string): MetricEnforcerConfig {
   const root = expectObject(value, `Config at ${sourcePath}`);
@@ -32,7 +31,6 @@ function validateAnalyzerConfig(name: string, value: unknown, sourcePath: string
     enabled: expectRequiredBoolean(analyzer, "enabled", context),
     command: expectOptionalString(analyzer, "command", context),
     args: expectOptionalStringArray(analyzer, "args", context),
-    options: expectOptionalOptionsObject(analyzer, "options", context),
   };
 }
 
@@ -129,36 +127,6 @@ function expectOptionalStringArray(object: JsonObject, key: string, context: str
   }
 
   return value;
-}
-
-function expectOptionalOptionsObject(object: JsonObject, key: string, context: string): Record<string, OptionValue> | undefined {
-  const value = object[key];
-  if (value === undefined) {
-    return undefined;
-  }
-
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new Error(
-      `[metric-enforcer] ${context} must define "${key}" as key/value pairs with string | number | boolean | null values when present.`,
-    );
-  }
-
-  const options = value as JsonObject;
-  const hasInvalidValue = Object.values(options).some(
-    (optionValue) =>
-      optionValue !== null &&
-      typeof optionValue !== "string" &&
-      typeof optionValue !== "number" &&
-      typeof optionValue !== "boolean",
-  );
-
-  if (hasInvalidValue) {
-    throw new Error(
-      `[metric-enforcer] ${context} must define "${key}" as key/value pairs with string | number | boolean | null values when present.`,
-    );
-  }
-
-  return options as Record<string, OptionValue>;
 }
 
 function expectOptionalFiniteNumber(object: JsonObject, key: string, context: string): number | undefined {

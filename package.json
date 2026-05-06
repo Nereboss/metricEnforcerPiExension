@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "keywords": ["pi-package"],
+  "scripts": {
+    "test": "node --test tests/*.test.ts"
+  },
   "pi": {
     "extensions": ["./extensions/metric-enforcer.ts"]
   },

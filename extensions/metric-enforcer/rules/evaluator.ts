@@ -1,5 +1,5 @@
-import type { ThresholdConfig } from "../config/types.js";
-import type { AnalyzerResult, MetricRule, ResolvedThresholds, Violation } from "../types.js";
+import type { ThresholdConfig } from "../config/types.ts";
+import type { AnalyzerResult, MetricRule, ResolvedThresholds, Violation } from "../types.ts";
 
 interface CompiledFilePatternRule {
   pattern: string;

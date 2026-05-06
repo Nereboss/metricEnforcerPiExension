@@ -1,6 +1,6 @@
-import type { MetricEnforcerConfig } from "../config/types.js";
-import type { AnalyzerResult, FileMetrics } from "../types.js";
-import type { AnalyzerPlugin } from "./analyzer-plugin.js";
+import type { MetricEnforcerConfig } from "../config/types.ts";
+import type { AnalyzerResult, FileMetrics } from "../types.ts";
+import type { AnalyzerPlugin } from "./analyzer-plugin.ts";
 
 interface CcshUnifiedParserOutput {
   data?: {
@@ -21,6 +21,7 @@ export interface CcshAnalyzerContext {
 }
 
 const CCSH_ANALYZER_NAME = "ccsh";
+const FILES_PLACEHOLDER = "$FILES";
 
 export const ccshAnalyzerPlugin: AnalyzerPlugin<MetricEnforcerConfig, CcshAnalyzerContext> = {
   name: CCSH_ANALYZER_NAME,
@@ -38,26 +39,19 @@ export const ccshAnalyzerPlugin: AnalyzerPlugin<MetricEnforcerConfig, CcshAnalyz
     config: MetricEnforcerConfig,
     ctx: CcshAnalyzerContext,
   ): Promise<AnalyzerResult> {
-    if (files.length === 0) {
-      return {
-        analyzer: CCSH_ANALYZER_NAME,
-        files: [],
-      };
-    }
-
     const analyzerConfig = config.analyzers[CCSH_ANALYZER_NAME];
     if (analyzerConfig === undefined) {
       throw new Error(`[metric-enforcer] Analyzer config "${CCSH_ANALYZER_NAME}" is missing.`);
     }
 
-    const command = analyzerConfig.command ?? CCSH_ANALYZER_NAME;
-    const cliArgs = [
-      "unifiedparser",
-      ...(analyzerConfig.args ?? []),
-      ...toCliOptions(analyzerConfig.options),
-      ...files,
-    ];
+    const command = analyzerConfig.command;
+    if (command === undefined || command.trim().length === 0) {
+      throw new Error(
+        `[metric-enforcer] Analyzer "${CCSH_ANALYZER_NAME}" requires "command" in config (for example "ccsh").`,
+      );
+    }
 
+    const cliArgs = resolveConfiguredArgs(analyzerConfig.args ?? [], files);
     const { stdout, stderr } = await ctx.execFile(command, cliArgs, ctx.cwd);
     const rawOutput = stdout.trim().length > 0 ? stdout : stderr;
 
@@ -127,25 +121,12 @@ function extractNumericMetrics(attributes: Record<string, unknown> | undefined):
   ) as Record<string, number>;
 }
 
-function toCliOptions(options: Record<string, string | number | boolean | null> | undefined): string[] {
-  if (options === undefined) {
-    return [];
+function resolveConfiguredArgs(configuredArgs: readonly string[], files: readonly string[]): string[] {
+  const includesFilesPlaceholder = configuredArgs.includes(FILES_PLACEHOLDER);
+
+  if (!includesFilesPlaceholder) {
+    return [...configuredArgs];
   }
 
-  const args: string[] = [];
-
-  for (const [key, value] of Object.entries(options)) {
-    if (value === false || value === null) {
-      continue;
-    }
-
-    if (value === true) {
-      args.push(`--${key}`);
-      continue;
-    }
-
-    args.push(`--${key}=${value}`);
-  }
-
-  return args;
+  return configuredArgs.flatMap((arg) => (arg === FILES_PLACEHOLDER ? [...files] : [arg]));
 }

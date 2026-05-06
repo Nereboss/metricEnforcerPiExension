@@ -1,9 +1,9 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import type { Violation } from "./metric-enforcer/types.js";
-import { loadMetricEnforcerConfig } from "./metric-enforcer/config/loader.js";
-import { runMetricOrchestration } from "./metric-enforcer/orchestrator.js";
+import type { Violation } from "./metric-enforcer/types.ts";
+import { loadMetricEnforcerConfig } from "./metric-enforcer/config/loader.ts";
+import { runMetricOrchestration } from "./metric-enforcer/orchestrator.ts";
 
 const execFileAsync = promisify(execFile);
 const MISSING_FILE_HASH = "__MISSING__";
@@ -136,6 +136,10 @@ export default function metricEnforcer(pi: ExtensionAPI) {
             : `Metric config loaded from ${loadedConfig.sourcePath}. Enabled analyzers: ${orchestrationResult.enabledAnalyzers.join(", ")}`,
           "info",
         );
+
+        for (const analyzerWarning of orchestrationResult.analyzerWarnings) {
+          ctx.ui.notify(analyzerWarning, "warning");
+        }
 
         ctx.ui.notify(formatViolationsSummary(orchestrationResult.violations), "info");
       }

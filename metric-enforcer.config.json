@@ -3,10 +3,7 @@
     "ccsh": {
       "enabled": true,
       "command": "ccsh",
-      "args": ["--ci"],
-      "options": {
-        "format": "json"
-      }
+      "args": ["unifiedparser", "."]
     }
   },
   "thresholds": {
@@ -16,8 +13,8 @@
         "error": 15
       },
       "rloc": {
-        "warning": 150,
-        "error": 250
+        "warning": 15,
+        "error": 25
       }
     },
     "filePatterns": {
@@ -25,6 +22,10 @@
         "complexity": {
           "warning": 8,
           "error": 12
+        },
+        "rloc": {
+          "warning": 12,
+          "error": 16
         }
       }
     }

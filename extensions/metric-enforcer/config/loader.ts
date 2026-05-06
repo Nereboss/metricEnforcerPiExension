@@ -1,8 +1,8 @@
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
-import type { MetricEnforcerConfig } from "./types.js";
-import { validateMetricEnforcerConfig } from "./validate-config.js";
+import type { MetricEnforcerConfig } from "./types.ts";
+import { validateMetricEnforcerConfig } from "./validate-config.ts";
 
 const DEFAULT_CONFIG_FILE_NAME = "metric-enforcer.config.json";
 const BUNDLED_DEFAULT_CONFIG_RELATIVE_PATH = "../../../metric-enforcer.config.json";

@@ -1,10 +1,9 @@
-import type { MetricRule } from "../types.js";
+import type { MetricRule } from "../types.ts";
 
 export interface AnalyzerConfig {
   enabled: boolean;
   command?: string;
   args?: string[];
-  options?: Record<string, string | number | boolean | null>;
 }
 
 export interface ThresholdConfig {

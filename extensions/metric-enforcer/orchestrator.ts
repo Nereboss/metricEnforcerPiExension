@@ -1,13 +1,14 @@
-import type { MetricEnforcerConfig } from "./config/types.js";
-import type { AnalyzerResult, Violation } from "./types.js";
-import type { AnalyzerPlugin } from "./analyzers/analyzer-plugin.js";
-import { ccshAnalyzerPlugin, type CcshAnalyzerContext } from "./analyzers/ccsh-analyzer.js";
-import { evaluateAnalyzerResults } from "./rules/evaluator.js";
+import type { MetricEnforcerConfig } from "./config/types.ts";
+import type { AnalyzerResult, Violation } from "./types.ts";
+import type { AnalyzerPlugin } from "./analyzers/analyzer-plugin.ts";
+import { ccshAnalyzerPlugin, type CcshAnalyzerContext } from "./analyzers/ccsh-analyzer.ts";
+import { evaluateAnalyzerResults } from "./rules/evaluator.ts";
 
 interface MetricAnalyzerExecution {
   selectedFiles: string[];
   result: AnalyzerResult;
   skipped: boolean;
+  warning?: string;
 }
 
 const analyzerPlugins: AnalyzerPlugin<MetricEnforcerConfig, CcshAnalyzerContext>[] = [ccshAnalyzerPlugin];
@@ -16,6 +17,7 @@ export interface OrchestrationResult {
   enabledAnalyzers: string[];
   analyzedFiles: string[];
   analyzerResults: AnalyzerResult[];
+  analyzerWarnings: string[];
   violations: Violation[];
 }
 
@@ -33,11 +35,15 @@ export async function runMetricOrchestration(
   const analyzedFiles = [...new Set(executions.flatMap((execution) => execution.selectedFiles))].sort((a, b) =>
     a.localeCompare(b),
   );
+  const analyzerWarnings = executions
+    .map((execution) => execution.warning)
+    .filter((warning): warning is string => warning !== undefined);
 
   return {
     enabledAnalyzers: enabledPlugins.map((plugin) => plugin.name),
     analyzedFiles,
     analyzerResults,
+    analyzerWarnings,
     violations: evaluateAnalyzerResults(analyzerResults, config.thresholds),
   };
 }
@@ -61,11 +67,37 @@ async function runPluginExecution(
     };
   }
 
-  const result = await plugin.analyze(selectedFiles, config, ctx);
+  try {
+    const result = await plugin.analyze(selectedFiles, config, ctx);
 
-  return {
-    selectedFiles,
-    result,
-    skipped: false,
-  };
+    return {
+      selectedFiles,
+      result,
+      skipped: false,
+    };
+  } catch (error) {
+    if (isExecutableNotFoundError(error)) {
+      const missingExecutable = error.path ?? plugin.name;
+      return {
+        selectedFiles,
+        result: {
+          analyzer: plugin.name,
+          files: [],
+        },
+        skipped: true,
+        warning: `Analyzer "${plugin.name}" skipped: executable "${missingExecutable}" was not found in PATH.`,
+      };
+    }
+
+    throw error;
+  }
+}
+
+function isExecutableNotFoundError(error: unknown): error is NodeJS.ErrnoException {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as NodeJS.ErrnoException).code === "ENOENT"
+  );
 }
