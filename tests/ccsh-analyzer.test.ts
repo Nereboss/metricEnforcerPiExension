@@ -59,6 +59,7 @@ test("ccsh analyzer executes configured command and reads JSON from configured o
   const projectDir = await mkdtemp(join(tmpdir(), "metric-enforcer-ccsh-unit-"));
 
   const config: MetricEnforcerConfig = {
+    logLevel: "warning",
     analyzers: {
       ccsh: {
         enabled: true,
@@ -103,6 +104,7 @@ test("ccsh analyzer executes configured command and reads JSON from configured o
 
 test("ccsh analyzer fails when output-file is missing in configured args", async () => {
   const config: MetricEnforcerConfig = {
+    logLevel: "warning",
     analyzers: {
       ccsh: {
         enabled: true,
@@ -136,6 +138,7 @@ test("ccsh analyzer can run real ccsh unifiedparser command when ccsh is availab
   await writeFile(join(projectDir, "index.ts"), "export const value = 1;\n", "utf8");
 
   const config: MetricEnforcerConfig = {
+    logLevel: "warning",
     analyzers: {
       ccsh: {
         enabled: true,

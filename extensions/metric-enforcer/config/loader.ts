@@ -11,7 +11,7 @@ const BUNDLED_DEFAULT_CONFIG_RELATIVE_PATH = "../../../metric-enforcer.config.js
 export interface LoadedMetricEnforcerConfig {
   config: MetricEnforcerConfig;
   sourcePath: string;
-  warning?: string;
+  warnings: string[];
 }
 
 export async function loadMetricEnforcerConfig(
@@ -22,23 +22,31 @@ export async function loadMetricEnforcerConfig(
   const projectConfig = await readConfigIfExists(projectConfigPath);
 
   if (projectConfig !== undefined) {
+    const validated = parseAndValidateConfig(projectConfigPath, projectConfig);
+
     return {
-      config: parseAndValidateConfig(projectConfigPath, projectConfig),
+      config: validated.config,
       sourcePath: projectConfigPath,
+      warnings: validated.warnings,
     };
   }
 
   const bundledConfigPath = fileURLToPath(new URL(BUNDLED_DEFAULT_CONFIG_RELATIVE_PATH, import.meta.url));
   const bundledConfig = await readConfigRequired(bundledConfigPath);
 
+  const validated = parseAndValidateConfig(bundledConfigPath, bundledConfig);
+
   return {
-    config: parseAndValidateConfig(bundledConfigPath, bundledConfig),
+    config: validated.config,
     sourcePath: bundledConfigPath,
-    warning: `[metric-enforcer] No ${configFileName} found at ${projectConfigPath}. Using bundled default config from extension repository.`,
+    warnings: [
+      `No ${configFileName} found at ${projectConfigPath}. Using bundled default config from extension repository.`,
+      ...validated.warnings,
+    ],
   };
 }
 
-function parseAndValidateConfig(configPath: string, rawConfig: string): MetricEnforcerConfig {
+function parseAndValidateConfig(configPath: string, rawConfig: string): ReturnType<typeof validateMetricEnforcerConfig> {
   let parsedConfig: unknown;
 
   try {

@@ -34,6 +34,7 @@ const sampleCcshUnifiedParserJson = JSON.stringify({
 
 test("orchestrator runs enabled ccsh analyzer and produces violations", async () => {
   const config: MetricEnforcerConfig = {
+    logLevel: "warning",
     analyzers: {
       ccsh: {
         enabled: true,
@@ -68,6 +69,7 @@ test("orchestrator runs enabled ccsh analyzer and produces violations", async ()
 
 test("orchestrator reports violations only for touched files", async () => {
   const config: MetricEnforcerConfig = {
+    logLevel: "warning",
     analyzers: {
       ccsh: {
         enabled: true,
@@ -136,6 +138,7 @@ test("orchestrator reports violations only for touched files", async () => {
 
 test("orchestrator skips analyzer when executable is missing", async () => {
   const config: MetricEnforcerConfig = {
+    logLevel: "warning",
     analyzers: {
       ccsh: {
         enabled: true,
@@ -169,6 +172,7 @@ test("orchestrator skips analyzer when executable is missing", async () => {
 
 test("orchestrator skips disabled analyzers", async () => {
   const config: MetricEnforcerConfig = {
+    logLevel: "warning",
     analyzers: {
       ccsh: {
         enabled: false,

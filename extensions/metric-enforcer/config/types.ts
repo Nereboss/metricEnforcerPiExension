@@ -1,5 +1,7 @@
 import type { MetricRule } from "../types.ts";
 
+export type MetricEnforcerLogLevel = "info" | "warning" | "error";
+
 export interface AnalyzerConfig {
   enabled: boolean;
   command?: string;
@@ -12,6 +14,7 @@ export interface ThresholdConfig {
 }
 
 export interface MetricEnforcerConfig {
+  logLevel: MetricEnforcerLogLevel;
   analyzers: Record<string, AnalyzerConfig>;
   thresholds: ThresholdConfig;
 }

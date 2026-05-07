@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import type { Violation } from "./metric-enforcer/types.ts";
 import { loadMetricEnforcerConfig } from "./metric-enforcer/config/loader.ts";
+import { logError, logInfo, logWarning } from "./metric-enforcer/logger.ts";
 import { runMetricOrchestration } from "./metric-enforcer/orchestrator.ts";
 import { formatMetricValue } from "./metric-enforcer/utils.ts";
 
@@ -11,6 +12,7 @@ const MISSING_FILE_HASH = "__MISSING__";
 
 let baselineSnapshot = createEmptySnapshot();
 let isMetricEnforcerActive = true;
+let configuredLogLevel: "info" | "warning" | "error" = "warning";
 
 function parsePorcelainV1ZPaths(output: string): string[] {
   const entries = output.split("\0").filter((entry) => entry.length > 0);
@@ -107,22 +109,27 @@ function filterExistingFiles(files: readonly string[], snapshot: Map<string, str
   return files.filter((filePath) => snapshot.has(filePath));
 }
 
+function applyConfiguredLogLevel(logLevel: "info" | "warning" | "error"): void {
+  configuredLogLevel = logLevel;
+}
+
+function logConfigWarnings(warnings: readonly string[], ctx: Parameters<typeof logWarning>[2]): void {
+  for (const warning of warnings) {
+    logWarning(warning, configuredLogLevel, ctx);
+  }
+}
+
 export default function metricEnforcer(pi: ExtensionAPI) {
   pi.registerCommand("activateMetricEnforcer", {
     description: "Activate metric enforcement for upcoming agent runs",
     handler: async (_args, ctx) => {
       if (isMetricEnforcerActive) {
-        if (ctx.hasUI) {
-          ctx.ui.notify("MetricEnforcer is already active.", "info");
-        }
+        logInfo("MetricEnforcer is already active.", configuredLogLevel, ctx);
         return;
       }
 
       isMetricEnforcerActive = true;
-
-      if (ctx.hasUI) {
-        ctx.ui.notify("MetricEnforcer activated.", "success");
-      }
+      logInfo("MetricEnforcer activated.", configuredLogLevel, ctx);
     },
   });
 
@@ -130,18 +137,13 @@ export default function metricEnforcer(pi: ExtensionAPI) {
     description: "Deactivate metric enforcement for upcoming agent runs",
     handler: async (_args, ctx) => {
       if (!isMetricEnforcerActive) {
-        if (ctx.hasUI) {
-          ctx.ui.notify("MetricEnforcer is already deactivated.", "info");
-        }
+        logInfo("MetricEnforcer is already deactivated.", configuredLogLevel, ctx);
         return;
       }
 
       isMetricEnforcerActive = false;
       baselineSnapshot = createEmptySnapshot();
-
-      if (ctx.hasUI) {
-        ctx.ui.notify("MetricEnforcer deactivated.", "success");
-      }
+      logInfo("MetricEnforcer deactivated.", configuredLogLevel, ctx);
     },
   });
 
@@ -149,17 +151,21 @@ export default function metricEnforcer(pi: ExtensionAPI) {
     if (!isMetricEnforcerActive) return;
 
     try {
+      const loadedConfig = await loadMetricEnforcerConfig();
+      applyConfiguredLogLevel(loadedConfig.config.logLevel);
+      logConfigWarnings(loadedConfig.warnings, ctx);
+    } catch (error) {
+      const message = `Could not load metric config at agent start: ${error instanceof Error ? error.message : String(error)}`;
+      logError(message, configuredLogLevel, ctx);
+    }
+
+    try {
       await runGit(["rev-parse", "--is-inside-work-tree"]);
       baselineSnapshot = await getWorkingTreeSnapshot();
     } catch (error) {
       baselineSnapshot = createEmptySnapshot();
       const message = `Could not capture git baseline: ${error instanceof Error ? error.message : String(error)}`;
-
-      if (ctx.hasUI) {
-        ctx.ui.notify(message, "error");
-      }
-
-      console.error(`[metric-enforcer] ${message}`);
+      logError(message, configuredLogLevel, ctx);
     }
   });
 
@@ -169,20 +175,12 @@ export default function metricEnforcer(pi: ExtensionAPI) {
     try {
       const endSnapshot = await getWorkingTreeSnapshot();
       const changedByAgent = getChangedFilesBetweenSnapshots(baselineSnapshot, endSnapshot);
-      const touchedFilesMessage = formatMessageForTouchedFiles(changedByAgent);
-
-      if (ctx.hasUI) {
-        ctx.ui.notify(touchedFilesMessage, "info");
-      }
 
       const loadedConfig = await loadMetricEnforcerConfig();
+      applyConfiguredLogLevel(loadedConfig.config.logLevel);
 
-      if (loadedConfig.warning !== undefined) {
-        if (ctx.hasUI) {
-          ctx.ui.notify(loadedConfig.warning, "warning");
-        }
-        console.warn(loadedConfig.warning);
-      }
+      logInfo(formatMessageForTouchedFiles(changedByAgent), configuredLogLevel, ctx);
+      logConfigWarnings(loadedConfig.warnings, ctx);
 
       const existingTouchedFiles = filterExistingFiles(changedByAgent, endSnapshot);
       const orchestrationResult = await runMetricOrchestration(existingTouchedFiles, loadedConfig.config, {
@@ -195,28 +193,22 @@ export default function metricEnforcer(pi: ExtensionAPI) {
           }),
       });
 
-      if (ctx.hasUI) {
-        ctx.ui.notify(
-          orchestrationResult.enabledAnalyzers.length === 0
-            ? `Metric config loaded from ${loadedConfig.sourcePath}. No analyzers enabled.`
-            : `Metric config loaded from ${loadedConfig.sourcePath}. Enabled analyzers: ${orchestrationResult.enabledAnalyzers.join(", ")}`,
-          "info",
-        );
+      logInfo(
+        orchestrationResult.enabledAnalyzers.length === 0
+          ? `Metric config loaded from ${loadedConfig.sourcePath}. No analyzers enabled.`
+          : `Metric config loaded from ${loadedConfig.sourcePath}. Enabled analyzers: ${orchestrationResult.enabledAnalyzers.join(", ")}`,
+        configuredLogLevel,
+        ctx,
+      );
 
-        for (const analyzerWarning of orchestrationResult.analyzerWarnings) {
-          ctx.ui.notify(analyzerWarning, "warning");
-        }
-
-        ctx.ui.notify(formatViolationsSummary(orchestrationResult.violations), "info");
+      for (const analyzerWarning of orchestrationResult.analyzerWarnings) {
+        logWarning(analyzerWarning, configuredLogLevel, ctx);
       }
+
+      logInfo(formatViolationsSummary(orchestrationResult.violations), configuredLogLevel, ctx);
     } catch (error) {
       const message = `Agent loop ended, but metric enforcement failed: ${error instanceof Error ? error.message : String(error)}`;
-
-      if (ctx.hasUI) {
-        ctx.ui.notify(message, "error");
-      }
-
-      console.error(`[metric-enforcer] ${message}`);
+      logError(message, configuredLogLevel, ctx);
     } finally {
       baselineSnapshot = createEmptySnapshot();
     }

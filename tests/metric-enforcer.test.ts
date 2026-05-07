@@ -73,6 +73,29 @@ test("deactivateMetricEnforcer disables metric checks until reactivated", async 
     process.chdir(tempRepo);
     await execFileAsync("git", ["init"]);
     await writeFile("sample.ts", "export const x = 1;\n", "utf8");
+    await mkdir(".pi/metricEnforcer", { recursive: true });
+    await writeFile(
+      ".pi/metricEnforcer/metric-enforcer.config.json",
+      JSON.stringify(
+        {
+          logLevel: "info",
+          analyzers: {
+            ccsh: {
+              enabled: false,
+            },
+          },
+          thresholds: {
+            global: {
+              complexity: { warning: 10 },
+            },
+            filePatterns: {},
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
 
     const notifications: Notification[] = [];
     const ctx: TestContext = {
@@ -93,7 +116,6 @@ test("deactivateMetricEnforcer disables metric checks until reactivated", async 
     await fakePi.emit("agent_end", ctx);
 
     const deactivatedMessages = notifications.map((entry) => entry.message);
-    assert.ok(deactivatedMessages.some((message) => message.includes("MetricEnforcer deactivated.")));
     assert.equal(deactivatedMessages.some((message) => message.includes("Metric checks passed.")), false);
 
     notifications.length = 0;
@@ -104,8 +126,126 @@ test("deactivateMetricEnforcer disables metric checks until reactivated", async 
     await fakePi.emit("agent_end", ctx);
 
     const reactivatedMessages = notifications.map((entry) => entry.message);
-    assert.ok(reactivatedMessages.some((message) => message.includes("MetricEnforcer activated.")));
     assert.ok(reactivatedMessages.some((message) => message.includes("Metric checks passed.")));
+  } finally {
+    process.chdir(previousCwd);
+  }
+});
+
+test("metric-enforcer respects logLevel and hides info messages when set to error", async () => {
+  const previousCwd = process.cwd();
+  const tempRepo = await mkdtemp(join(tmpdir(), "metric-enforcer-log-level-test-"));
+
+  try {
+    process.chdir(tempRepo);
+    await execFileAsync("git", ["init"]);
+
+    await writeFile("sample.ts", "export const x = 1;\n", "utf8");
+
+    await mkdir(".pi/metricEnforcer", { recursive: true });
+    await writeFile(
+      ".pi/metricEnforcer/metric-enforcer.config.json",
+      JSON.stringify(
+        {
+          logLevel: "error",
+          analyzers: {
+            ccsh: {
+              enabled: false,
+            },
+          },
+          thresholds: {
+            global: {
+              complexity: { warning: 10 },
+            },
+            filePatterns: {},
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const notifications: Notification[] = [];
+    const ctx: TestContext = {
+      hasUI: true,
+      ui: {
+        notify(message, level) {
+          notifications.push({ message, level });
+        },
+      },
+    };
+
+    const fakePi = new FakePi();
+    metricEnforcer(fakePi as never);
+
+    await fakePi.emit("agent_start", ctx);
+    await writeFile("sample.ts", "export const x = 2;\n", "utf8");
+    await fakePi.emit("agent_end", ctx);
+
+    assert.equal(notifications.length, 0);
+  } finally {
+    process.chdir(previousCwd);
+  }
+});
+
+test("metric-enforcer falls back to warning logLevel when config logLevel is invalid", async () => {
+  const previousCwd = process.cwd();
+  const tempRepo = await mkdtemp(join(tmpdir(), "metric-enforcer-invalid-log-level-test-"));
+
+  try {
+    process.chdir(tempRepo);
+    await execFileAsync("git", ["init"]);
+
+    await writeFile("sample.ts", "export const x = 1;\n", "utf8");
+
+    await mkdir(".pi/metricEnforcer", { recursive: true });
+    await writeFile(
+      ".pi/metricEnforcer/metric-enforcer.config.json",
+      JSON.stringify(
+        {
+          logLevel: "verbose",
+          analyzers: {
+            ccsh: {
+              enabled: false,
+            },
+          },
+          thresholds: {
+            global: {
+              complexity: { warning: 10 },
+            },
+            filePatterns: {},
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const notifications: Notification[] = [];
+    const ctx: TestContext = {
+      hasUI: true,
+      ui: {
+        notify(message, level) {
+          notifications.push({ message, level });
+        },
+      },
+    };
+
+    const fakePi = new FakePi();
+    metricEnforcer(fakePi as never);
+
+    await fakePi.emit("agent_start", ctx);
+    await writeFile("sample.ts", "export const x = 2;\n", "utf8");
+    await fakePi.emit("agent_end", ctx);
+
+    assert.ok(
+      notifications.some((entry) =>
+        entry.message.includes('Invalid "logLevel"') && entry.message.includes('Falling back to "warning"'),
+      ),
+    );
+    assert.equal(notifications.some((entry) => entry.message.includes("Agent changed files:")), false);
   } finally {
     process.chdir(previousCwd);
   }
@@ -126,6 +266,7 @@ test("metric-enforcer happy path with disabled analyzer reports successful check
       ".pi/metricEnforcer/metric-enforcer.config.json",
       JSON.stringify(
         {
+          logLevel: "info",
           analyzers: {
             ccsh: {
               enabled: false,

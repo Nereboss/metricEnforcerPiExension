@@ -6,6 +6,11 @@
   "additionalProperties": false,
   "required": ["analyzers", "thresholds"],
   "properties": {
+    "logLevel": {
+      "type": "string",
+      "enum": ["info", "warning", "error"],
+      "default": "warning"
+    },
     "analyzers": {
       "type": "object",
       "minProperties": 1,

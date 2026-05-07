@@ -1,15 +1,40 @@
 import type { MetricRule } from "../types.ts";
-import type { AnalyzerConfig, MetricEnforcerConfig } from "./types.ts";
+import type { AnalyzerConfig, MetricEnforcerConfig, MetricEnforcerLogLevel } from "./types.ts";
 
 type JsonObject = Record<string, unknown>;
 
-export function validateMetricEnforcerConfig(value: unknown, sourcePath: string): MetricEnforcerConfig {
+export interface ValidatedMetricEnforcerConfig {
+  config: MetricEnforcerConfig;
+  warnings: string[];
+}
+
+export function validateMetricEnforcerConfig(value: unknown, sourcePath: string): ValidatedMetricEnforcerConfig {
   const root = expectObject(value, `Config at ${sourcePath}`);
+  const warnings: string[] = [];
 
   return {
-    analyzers: validateAnalyzers(root.analyzers, sourcePath),
-    thresholds: validateThresholds(root.thresholds, sourcePath),
+    config: {
+      logLevel: validateLogLevel(root.logLevel, sourcePath, warnings),
+      analyzers: validateAnalyzers(root.analyzers, sourcePath),
+      thresholds: validateThresholds(root.thresholds, sourcePath),
+    },
+    warnings,
   };
+}
+
+function validateLogLevel(value: unknown, sourcePath: string, warnings: string[]): MetricEnforcerLogLevel {
+  if (value === undefined) {
+    return "warning";
+  }
+
+  if (value === "info" || value === "warning" || value === "error") {
+    return value;
+  }
+
+  warnings.push(
+    `Invalid "logLevel" in ${sourcePath}: expected one of "info", "warning", "error". Falling back to "warning".`,
+  );
+  return "warning";
 }
 
 function validateAnalyzers(value: unknown, sourcePath: string): Record<string, AnalyzerConfig> {
