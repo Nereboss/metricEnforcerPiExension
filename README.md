@@ -12,6 +12,8 @@ This extension to the PI coding agent automatically runs
     - setting a metric to "-1" means that it will not be checked
 - modular design; code quality analyzers are pluggable and can be extended for additional tools
 
+## Customizable config
+On the first run the extension creates a config file where metric thresholds and used analyzers can be configured.
 
 ## TODO: things to put into the "Agents.md" of the extension
 - Try to focus on the code you changed first

@@ -1,6 +1,6 @@
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { MetricEnforcerConfig } from "./types.ts";
 import { validateMetricEnforcerConfig } from "./validate-config.ts";
 import { getErrorCode } from "../utils.ts";
@@ -34,13 +34,15 @@ export async function loadMetricEnforcerConfig(
   const bundledConfigPath = fileURLToPath(new URL(BUNDLED_DEFAULT_CONFIG_RELATIVE_PATH, import.meta.url));
   const bundledConfig = await readConfigRequired(bundledConfigPath);
 
-  const validated = parseAndValidateConfig(bundledConfigPath, bundledConfig);
+  await writeProjectConfig(projectConfigPath, bundledConfig);
+
+  const validated = parseAndValidateConfig(projectConfigPath, bundledConfig);
 
   return {
     config: validated.config,
-    sourcePath: bundledConfigPath,
+    sourcePath: projectConfigPath,
     warnings: [
-      `No ${configFileName} found at ${projectConfigPath}. Using bundled default config from extension repository.`,
+      `No ${configFileName} found at ${projectConfigPath}. Created a default config based on the bundled extension config.`,
       ...validated.warnings,
     ],
   };
@@ -84,9 +86,19 @@ async function readConfigRequired(path: string): Promise<string> {
   }
 }
 
+async function writeProjectConfig(path: string, content: string): Promise<void> {
+  try {
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, content, "utf8");
+  } catch (error) {
+    throw new Error(
+      `[metric-enforcer] Could not create project config at ${path}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
 function isMissingFileError(error: unknown): error is NodeJS.ErrnoException {
   return getErrorCode(error) === "ENOENT";
 }
-
 
 export { DEFAULT_CONFIG_FILE_NAME };

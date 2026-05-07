@@ -27,6 +27,7 @@ Agent behavior guidelines
 - Avoid adding non-essential fields to shared output contracts unless required by the agreed user-facing behavior.
 - State updates: After making changes that affect design or plan, update @plan.md and this AGENTS.md if necessary.
 - Keep public API docs up to date (README, README sections for extensions, examples).
+- After code changes, execute `npm run test` to see if all tests pass
 
 Coding standards
 ----------------
