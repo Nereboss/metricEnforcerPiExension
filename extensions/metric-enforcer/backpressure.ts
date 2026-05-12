@@ -22,15 +22,7 @@ export function selectBackpressureViolations(
 }
 
 export function formatBackpressureUserMessage(violations: readonly Violation[]): string {
-  const groupedViolationsByFilePath = groupViolationsByFilePath(violations);
-  const sortedFilePaths = [...groupedViolationsByFilePath.keys()].sort((a, b) => a.localeCompare(b));
-
-  const fileViolationLines = sortedFilePaths.flatMap((filePath) => {
-    const fileViolations = groupedViolationsByFilePath.get(filePath) ?? [];
-    return formatFileViolationLines(filePath, fileViolations);
-  });
-
-  return [...BACKPRESSURE_MESSAGE_HEADER_LINES, ...fileViolationLines].join("\n");
+  return [...BACKPRESSURE_MESSAGE_HEADER_LINES, ...formatViolationsByFileLines(violations)].join("\n");
 }
 
 export function formatRetriesExhaustedWarning(
@@ -41,9 +33,10 @@ export function formatRetriesExhaustedWarning(
     throw new Error("configuredMaxRetries must not be -1 when this function is called");
   }
 
-  const remainingViolationsSummary = summarizeViolationsByMetric(violations);
-
-  return `Metric violations are still present after ${configuredMaxRetries} allowed backpressure retries. The agent could not fix them. Remaining violations: ${remainingViolationsSummary}`;
+  return [
+    `Metric violations are still present after ${configuredMaxRetries} allowed backpressure retries. The agent could not fix them. Remaining violations:`,
+    ...formatViolationsByFileLines(violations),
+  ].join("\n");
 }
 
 function groupViolationsByFilePath(violations: readonly Violation[]): Map<string, Violation[]> {
@@ -76,13 +69,16 @@ function formatViolationDetailLine(violation: Violation): string {
   return `  - ${violation.severity.toUpperCase()}: ${violation.metric}=${formatMetricValue(violation.actual)} (threshold ${formatMetricValue(violation.threshold)})`;
 }
 
-function summarizeViolationsByMetric(violations: readonly Violation[]): string {
-  if (violations.length === 0) {
-    return "none";
+function formatViolationsByFileLines(violations: readonly Violation[]): string[] {
+  const groupedViolationsByFilePath = groupViolationsByFilePath(violations);
+  const sortedFilePaths = [...groupedViolationsByFilePath.keys()].sort((a, b) => a.localeCompare(b));
+
+  if (sortedFilePaths.length === 0) {
+    return ["- none"];
   }
 
-  return violations
-    .map((violation) => `${violation.filePath}:${violation.metric}`)
-    .sort((a, b) => a.localeCompare(b))
-    .join(", ");
+  return sortedFilePaths.flatMap((filePath) => {
+    const fileViolations = groupedViolationsByFilePath.get(filePath) ?? [];
+    return formatFileViolationLines(filePath, fileViolations);
+  });
 }

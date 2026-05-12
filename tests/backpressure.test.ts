@@ -52,9 +52,11 @@ test("formatBackpressureUserMessage includes severity-specific guidance", () => 
   assert.ok(message.includes("WARNING: rloc=9"));
 });
 
-test("formatRetriesExhaustedWarning contains unresolved violation summary", () => {
+test("formatRetriesExhaustedWarning contains unresolved violations in file/metric message format", () => {
   const warning = formatRetriesExhaustedWarning(violations, 3);
 
   assert.ok(warning.includes("after 3 allowed backpressure retries"));
-  assert.ok(warning.includes("src/a.ts:complexity"));
+  assert.ok(warning.includes("- src/a.ts"));
+  assert.ok(warning.includes("ERROR: complexity=20"));
+  assert.ok(warning.includes("WARNING: rloc=9"));
 });
