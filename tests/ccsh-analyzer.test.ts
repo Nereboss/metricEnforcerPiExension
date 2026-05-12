@@ -38,6 +38,11 @@ const sampleCcshUnifiedParserJson = JSON.stringify({
   },
 });
 
+const defaultBackpressure = {
+  errorOnly: false,
+  maxBackpressureRetries: 3,
+} as const;
+
 test("ccsh parser maps unifiedparser JSON into normalized file metrics", () => {
   const result = parseCcshUnifiedParserJson(sampleCcshUnifiedParserJson);
 
@@ -77,6 +82,7 @@ test("ccsh analyzer executes configured command and reads JSON from configured o
       global: {},
       filePatterns: {},
     },
+    backpressure: defaultBackpressure,
   };
 
   const result = await ccshAnalyzerPlugin.analyze(["."], config, {
@@ -116,6 +122,7 @@ test("ccsh analyzer fails when output-file is missing in configured args", async
       global: {},
       filePatterns: {},
     },
+    backpressure: defaultBackpressure,
   };
 
   await assert.rejects(
@@ -155,6 +162,7 @@ test("ccsh analyzer can run real ccsh unifiedparser command when ccsh is availab
       global: {},
       filePatterns: {},
     },
+    backpressure: defaultBackpressure,
   };
 
   const result = await ccshAnalyzerPlugin.analyze(["index.ts"], config, {

@@ -32,6 +32,11 @@ const sampleCcshUnifiedParserJson = JSON.stringify({
   },
 });
 
+const defaultBackpressure = {
+  errorOnly: false,
+  maxBackpressureRetries: 3,
+} as const;
+
 test("orchestrator runs enabled ccsh analyzer and produces violations", async () => {
   const config: MetricEnforcerConfig = {
     logLevel: "warning",
@@ -48,6 +53,7 @@ test("orchestrator runs enabled ccsh analyzer and produces violations", async ()
       },
       filePatterns: {},
     },
+    backpressure: defaultBackpressure,
   };
 
   const result = await runMetricOrchestration(["."], config, {
@@ -83,6 +89,7 @@ test("orchestrator reports violations only for touched files", async () => {
       },
       filePatterns: {},
     },
+    backpressure: defaultBackpressure,
   };
 
   const result = await runMetricOrchestration(["src/a.ts"], config, {
@@ -152,6 +159,7 @@ test("orchestrator skips analyzer when executable is missing", async () => {
       },
       filePatterns: {},
     },
+    backpressure: defaultBackpressure,
   };
 
   const result = await runMetricOrchestration(["."], config, {
@@ -184,6 +192,7 @@ test("orchestrator skips disabled analyzers", async () => {
       },
       filePatterns: {},
     },
+    backpressure: defaultBackpressure,
   };
 
   const result = await runMetricOrchestration(["."], config, {

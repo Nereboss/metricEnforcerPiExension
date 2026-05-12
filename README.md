@@ -7,6 +7,7 @@ This extension to the PI coding agent automatically runs
 ## Features
 - custom commands to activate/deactivate the extension (`/activateMetricEnforcer`, `/deactivateMetricEnforcer`)
 - configurable extension log level via `logLevel` (`"info" | "warning" | "error"`, default: `"warning"`)
+- configurable LLM backpressure (`backpressure.errorOnly`, `backpressure.maxBackpressureRetries`)
 - config file where the user can set "warning" and "error" labels for each supported metric
     - supports file-ending specific overwrites of these metrics
     - setting a metric to "-1" means that it will not be checked

@@ -13,8 +13,14 @@ export interface ThresholdConfig {
   filePatterns: Record<string, Record<string, MetricRule>>;
 }
 
+export interface BackpressureConfig {
+  errorOnly: boolean;
+  maxBackpressureRetries: number;
+}
+
 export interface MetricEnforcerConfig {
   logLevel: MetricEnforcerLogLevel;
   analyzers: Record<string, AnalyzerConfig>;
   thresholds: ThresholdConfig;
+  backpressure: BackpressureConfig;
 }

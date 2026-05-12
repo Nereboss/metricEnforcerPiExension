@@ -1,5 +1,5 @@
 import type { MetricRule } from "../types.ts";
-import type { AnalyzerConfig, MetricEnforcerConfig, MetricEnforcerLogLevel } from "./types.ts";
+import type { AnalyzerConfig, BackpressureConfig, MetricEnforcerConfig, MetricEnforcerLogLevel } from "./types.ts";
 
 type JsonObject = Record<string, unknown>;
 
@@ -17,6 +17,7 @@ export function validateMetricEnforcerConfig(value: unknown, sourcePath: string)
       logLevel: validateLogLevel(root.logLevel, sourcePath, warnings),
       analyzers: validateAnalyzers(root.analyzers, sourcePath),
       thresholds: validateThresholds(root.thresholds, sourcePath),
+      backpressure: validateBackpressure(root.backpressure, sourcePath, warnings),
     },
     warnings,
   };
@@ -71,6 +72,37 @@ function validateThresholds(value: unknown, sourcePath: string): MetricEnforcerC
   };
 }
 
+function validateBackpressure(value: unknown, sourcePath: string, warnings: string[]): BackpressureConfig {
+  if (value === undefined) {
+    return {
+      errorOnly: false,
+      maxBackpressureRetries: 3,
+    };
+  }
+
+  const backpressure = expectObject(value, `"backpressure" in ${sourcePath}`);
+
+  return {
+    errorOnly: expectOptionalBoolean(backpressure, "errorOnly", `"backpressure" in ${sourcePath}`) ?? false,
+    maxBackpressureRetries: validateMaxBackpressureRetries(backpressure.maxBackpressureRetries, sourcePath, warnings),
+  };
+}
+
+function validateMaxBackpressureRetries(value: unknown, sourcePath: string, warnings: string[]): number {
+  if (value === undefined) {
+    return 3;
+  }
+
+  if (typeof value !== "number" || !Number.isInteger(value) || value < -1) {
+    warnings.push(
+      `Invalid "backpressure.maxBackpressureRetries" in ${sourcePath}: expected an integer >= -1. Falling back to 3.`,
+    );
+    return 3;
+  }
+
+  return value;
+}
+
 function validateFilePatternRulesMap(value: unknown, context: string): Record<string, Record<string, MetricRule>> {
   const patterns = expectObject(value, context);
 
@@ -123,6 +155,19 @@ function expectRequiredBoolean(object: JsonObject, key: string, context: string)
   const value = object[key];
   if (typeof value !== "boolean") {
     throw new Error(`[metric-enforcer] ${context} must define boolean "${key}".`);
+  }
+
+  return value;
+}
+
+function expectOptionalBoolean(object: JsonObject, key: string, context: string): boolean | undefined {
+  const value = object[key];
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (typeof value !== "boolean") {
+    throw new Error(`[metric-enforcer] ${context} must define boolean "${key}" when present.`);
   }
 
   return value;

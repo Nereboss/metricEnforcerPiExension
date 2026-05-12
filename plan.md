@@ -73,39 +73,40 @@ Recommended approach:
 
 ## Actionable Implementation Plan
 
-1. **Define shared types**
+1. ✅ **Define shared types**
    - `AnalyzerResult`, `FileMetrics`, `Violation`, `MetricRule`, `ResolvedThresholds`.
 
-2. **Create analyzer plugin interface**
+2. ✅ **Create analyzer plugin interface**
    - `name`
    - `isEnabled(config)`
    - `selectFiles(files, config)`
    - `analyze(files, config, ctx): Promise<AnalyzerResult>`
 
-3. **Implement config schema + loader (JSON)**
+3. ✅ **Implement config schema + loader (JSON)**
    - Validate analyzers config.
    - Validate metric rules (`warning`/`error` optional, at least one required).
    - Support global + file-type-specific thresholds.
 
-4. **Implement rules evaluator module**
+4. ✅ **Implement rules evaluator module**
    - Input: normalized metrics + resolved rules per file.
    - Output: violations with severity.
    - Independent, pure, unit-testable.
 
-5. **Implement first plugin: `ccsh`**
+5. ✅ **Implement first plugin: `ccsh`**
    - Execute ccsh.
    - Parse ccsh output.
    - Map to normalized `AnalyzerResult`.
 
-6. **Wire orchestrator into extension flow**
+6. ✅ **Wire orchestrator into extension flow**
    - Keep touched-file detection.
    - Replace bash script call with analyzer orchestrator.
+   - Analyze repo-level output and report violations only for touched files.
 
-7. **Notification formatter**
-   - concise user message (`ctx.ui.notify`) with files + violations.
-   - optional debug detail behind config flag.
+7. ✅ **Notification/logging layer**
+   - centralized `MetricEnforcerLogger` class for extension messaging.
+   - config-driven filtering via `logLevel` (`info` | `warning` | `error`, default `warning`).
 
-8. **Tests (minimal but critical)**
+8. ✅ **Tests (minimal but critical)**
    - ccsh parser test with `sample_cc.json`
    - rules evaluator test for warning/error behavior
    - file-type override precedence test

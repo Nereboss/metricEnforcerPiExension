@@ -1,5 +1,5 @@
 {
-  "logLevel": "info",
+  "logLevel": "warning",
   "analyzers": {
     "ccsh": {
       "enabled": true,
@@ -13,15 +13,27 @@
       ]
     }
   },
+  "backpressure": {
+    "errorOnly": false,
+    "maxBackpressureRetries": 3
+  },
   "thresholds": {
     "global": {
       "complexity": {
-        "warning": 10,
-        "error": 15
+        "warning": 50,
+        "error": 100
+      },
+      "logic_complexity": {
+        "warning": 40,
+        "error": 80
       },
       "rloc": {
-        "warning": 15,
-        "error": 25
+        "warning": 250,
+        "error": 500
+      },
+      "comment_lines": {
+        "warning": 50,
+        "error": 100
       }
     },
     "filePatterns": {

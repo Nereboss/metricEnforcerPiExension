@@ -45,8 +45,10 @@ function log(
 
   if (ctx?.hasUI) {
     ctx.ui.notify(prefixedMessage, level);
+    return;
   }
 
+  // when PI is in headless mode, directly write logs to console
   if (level === "error") {
     console.error(prefixedMessage);
     return;

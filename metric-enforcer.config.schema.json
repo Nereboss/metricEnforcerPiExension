@@ -16,6 +16,7 @@
       "minProperties": 1,
       "additionalProperties": { "$ref": "#/$defs/analyzerConfig" }
     },
+    "backpressure": { "$ref": "#/$defs/backpressureConfig" },
     "thresholds": { "$ref": "#/$defs/thresholdConfig" }
   },
   "$defs": {
@@ -30,6 +31,14 @@
           "type": "array",
           "items": { "type": "string" }
         }
+      }
+    },
+    "backpressureConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "errorOnly": { "type": "boolean", "default": false },
+        "maxBackpressureRetries": { "type": "integer", "minimum": -1, "default": 3 }
       }
     },
     "thresholdConfig": {

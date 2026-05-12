@@ -12,6 +12,7 @@ const execFileAsync = promisify(execFile);
 class FakePi {
   private handlers = new Map<string, Array<(event: unknown, ctx: TestContext) => Promise<void>>>();
   private commands = new Map<string, (args: string, ctx: TestContext) => Promise<void>>();
+  private userMessages: string[] = [];
 
   on(eventName: string, handler: (event: unknown, ctx: TestContext) => Promise<void>): void {
     const existing = this.handlers.get(eventName) ?? [];
@@ -38,6 +39,18 @@ class FakePi {
     }
 
     await handler(args, ctx);
+  }
+
+  sendUserMessage(content: string): void {
+    this.userMessages.push(content);
+  }
+
+  getSentUserMessages(): string[] {
+    return [...this.userMessages];
+  }
+
+  clearSentUserMessages(): void {
+    this.userMessages = [];
   }
 
   getRegisteredEventNames(): string[] {
@@ -246,6 +259,151 @@ test("metric-enforcer falls back to warning logLevel when config logLevel is inv
       ),
     );
     assert.equal(notifications.some((entry) => entry.message.includes("Agent changed files:")), false);
+  } finally {
+    process.chdir(previousCwd);
+  }
+});
+
+test("metric-enforcer sends warning backpressure as user message", async () => {
+  const previousCwd = process.cwd();
+  const tempRepo = await mkdtemp(join(tmpdir(), "metric-enforcer-warning-backpressure-test-"));
+
+  try {
+    process.chdir(tempRepo);
+    await execFileAsync("git", ["init"]);
+
+    await writeFile("sample.ts", "export const x = 1;\n", "utf8");
+
+    await mkdir(".pi/metricEnforcer", { recursive: true });
+    await writeFile(
+      ".pi/metricEnforcer/metric-enforcer.config.json",
+      JSON.stringify(
+        {
+          logLevel: "info",
+          analyzers: {
+            ccsh: {
+              enabled: true,
+              command: "node",
+              args: [
+                "-e",
+                "const fs=require('fs');const arg=process.argv.find((value)=>value.startsWith('--output-file='));const out=arg.split('=')[1];fs.mkdirSync('.pi/metricEnforcer',{recursive:true});fs.writeFileSync(out,JSON.stringify({data:{nodes:[{name:'root',type:'Folder',children:[{name:'sample.ts',type:'File',attributes:{complexity:11},children:[]}]}]}}));",
+                "--",
+                "--output-file=.pi/metricEnforcer/cachedAnalysis.cc.json",
+              ],
+            },
+          },
+          backpressure: {
+            errorOnly: false,
+            maxBackpressureRetries: 3,
+          },
+          thresholds: {
+            global: {
+              complexity: { warning: 10, error: 15 },
+            },
+            filePatterns: {},
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const notifications: Notification[] = [];
+    const ctx: TestContext = {
+      hasUI: true,
+      ui: {
+        notify(message, level) {
+          notifications.push({ message, level });
+        },
+      },
+    };
+
+    const fakePi = new FakePi();
+    metricEnforcer(fakePi as never);
+
+    await fakePi.emit("agent_start", ctx);
+    await writeFile("sample.ts", "export const x = 2;\n", "utf8");
+    await fakePi.emit("agent_end", ctx);
+
+    const sentUserMessages = fakePi.getSentUserMessages();
+    assert.equal(sentUserMessages.length, 1);
+    assert.ok(sentUserMessages[0].includes("WARNING"));
+    assert.ok(sentUserMessages[0].includes("consider refactoring"));
+  } finally {
+    process.chdir(previousCwd);
+  }
+});
+
+test("metric-enforcer stops backpressure when max retries are exhausted", async () => {
+  const previousCwd = process.cwd();
+  const tempRepo = await mkdtemp(join(tmpdir(), "metric-enforcer-retry-exhausted-test-"));
+
+  try {
+    process.chdir(tempRepo);
+    await execFileAsync("git", ["init"]);
+
+    await writeFile("sample.ts", "export const x = 1;\n", "utf8");
+
+    await mkdir(".pi/metricEnforcer", { recursive: true });
+    await writeFile(
+      ".pi/metricEnforcer/metric-enforcer.config.json",
+      JSON.stringify(
+        {
+          logLevel: "info",
+          analyzers: {
+            ccsh: {
+              enabled: true,
+              command: "node",
+              args: [
+                "-e",
+                "const fs=require('fs');const arg=process.argv.find((value)=>value.startsWith('--output-file='));const out=arg.split('=')[1];fs.mkdirSync('.pi/metricEnforcer',{recursive:true});fs.writeFileSync(out,JSON.stringify({data:{nodes:[{name:'root',type:'Folder',children:[{name:'sample.ts',type:'File',attributes:{complexity:99},children:[]}]}]}}));",
+                "--",
+                "--output-file=.pi/metricEnforcer/cachedAnalysis.cc.json",
+              ],
+            },
+          },
+          backpressure: {
+            errorOnly: false,
+            maxBackpressureRetries: 1,
+          },
+          thresholds: {
+            global: {
+              complexity: { warning: 10, error: 15 },
+            },
+            filePatterns: {},
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const notifications: Notification[] = [];
+    const ctx: TestContext = {
+      hasUI: true,
+      ui: {
+        notify(message, level) {
+          notifications.push({ message, level });
+        },
+      },
+    };
+
+    const fakePi = new FakePi();
+    metricEnforcer(fakePi as never);
+
+    await fakePi.emit("agent_start", ctx);
+    await writeFile("sample.ts", "export const x = 2;\n", "utf8");
+    await fakePi.emit("agent_end", ctx);
+    assert.equal(fakePi.getSentUserMessages().length, 1);
+
+    await fakePi.emit("agent_start", ctx);
+    await writeFile("sample.ts", "export const x = 3;\n", "utf8");
+    await fakePi.emit("agent_end", ctx);
+
+    assert.equal(fakePi.getSentUserMessages().length, 1);
+    assert.ok(notifications.some((entry) => entry.message.includes("could not fix")));
   } finally {
     process.chdir(previousCwd);
   }

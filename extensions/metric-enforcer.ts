@@ -5,6 +5,11 @@ import type { Violation } from "./metric-enforcer/types.ts";
 import { loadMetricEnforcerConfig } from "./metric-enforcer/config/loader.ts";
 import { logError, logInfo, logWarning } from "./metric-enforcer/logger.ts";
 import { runMetricOrchestration } from "./metric-enforcer/orchestrator.ts";
+import {
+  formatBackpressureUserMessage,
+  formatRetriesExhaustedWarning,
+  selectBackpressureViolations,
+} from "./metric-enforcer/backpressure.ts";
 import { formatMetricValue } from "./metric-enforcer/utils.ts";
 
 const execFileAsync = promisify(execFile);
@@ -13,6 +18,8 @@ const MISSING_FILE_HASH = "__MISSING__";
 let baselineSnapshot = createEmptySnapshot();
 let isMetricEnforcerActive = true;
 let configuredLogLevel: "info" | "warning" | "error" = "warning";
+let backpressureRetryCount = 0;
+let awaitingBackpressureResolution = false;
 
 function parsePorcelainV1ZPaths(output: string): string[] {
   const entries = output.split("\0").filter((entry) => entry.length > 0);
@@ -120,6 +127,12 @@ function logConfigWarnings(warnings: readonly string[], ctx: Parameters<typeof l
 }
 
 export default function metricEnforcer(pi: ExtensionAPI) {
+  baselineSnapshot = createEmptySnapshot();
+  isMetricEnforcerActive = true;
+  configuredLogLevel = "warning";
+  backpressureRetryCount = 0;
+  awaitingBackpressureResolution = false;
+
   pi.registerCommand("activateMetricEnforcer", {
     description: "Activate metric enforcement for upcoming agent runs",
     handler: async (_args, ctx) => {
@@ -143,12 +156,18 @@ export default function metricEnforcer(pi: ExtensionAPI) {
 
       isMetricEnforcerActive = false;
       baselineSnapshot = createEmptySnapshot();
+      backpressureRetryCount = 0;
+      awaitingBackpressureResolution = false;
       logInfo("MetricEnforcer deactivated.", configuredLogLevel, ctx);
     },
   });
 
   pi.on("agent_start", async (_event, ctx) => {
     if (!isMetricEnforcerActive) return;
+
+    if (!awaitingBackpressureResolution) {
+      backpressureRetryCount = 0;
+    }
 
     try {
       const loadedConfig = await loadMetricEnforcerConfig();
@@ -206,6 +225,31 @@ export default function metricEnforcer(pi: ExtensionAPI) {
       }
 
       logInfo(formatViolationsSummary(orchestrationResult.violations), configuredLogLevel, ctx);
+
+      const backpressureViolations = selectBackpressureViolations(
+        orchestrationResult.violations,
+        loadedConfig.config.backpressure,
+      );
+
+      if (backpressureViolations.length === 0) {
+        backpressureRetryCount = 0;
+        awaitingBackpressureResolution = false;
+        return;
+      }
+
+      const maxBackpressureRetries = loadedConfig.config.backpressure.maxBackpressureRetries;
+
+      if (maxBackpressureRetries === -1 || backpressureRetryCount < maxBackpressureRetries) {
+        backpressureRetryCount += 1;
+        awaitingBackpressureResolution = true;
+        pi.sendUserMessage(formatBackpressureUserMessage(backpressureViolations));
+        return;
+      }
+
+      const retriesExhaustedMessage = formatRetriesExhaustedWarning(backpressureViolations, maxBackpressureRetries);
+      logWarning(retriesExhaustedMessage, configuredLogLevel, ctx);
+      backpressureRetryCount = 0;
+      awaitingBackpressureResolution = false;
     } catch (error) {
       const message = `Agent loop ended, but metric enforcement failed: ${error instanceof Error ? error.message : String(error)}`;
       logError(message, configuredLogLevel, ctx);
