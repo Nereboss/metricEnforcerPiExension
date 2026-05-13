@@ -121,23 +121,108 @@ function toSortedFilePathArray(filePaths: ReadonlySet<string>): string[] {
   return [...filePaths].sort((a, b) => a.localeCompare(b));
 }
 
+type ExtensionHandlerContext = Parameters<typeof logWarning>[2];
+type LoadedMetricConfig = Awaited<ReturnType<typeof loadMetricEnforcerConfig>>;
+
 function applyConfiguredLogLevel(logLevel: "info" | "warning" | "error"): void {
   configuredLogLevel = logLevel;
 }
 
-function logConfigWarnings(warnings: readonly string[], ctx: Parameters<typeof logWarning>[2]): void {
+function logConfigWarnings(warnings: readonly string[], ctx: ExtensionHandlerContext): void {
   for (const warning of warnings) {
     logWarning(warning, configuredLogLevel, ctx);
   }
 }
 
-export default function metricEnforcer(pi: ExtensionAPI) {
+function resetTrackingStateForNewCycle(): void {
+  backpressureRetryCount = 0;
+  cumulativeAgentTouchedFiles = new Set<string>();
+  shouldResetTrackingOnNextAgentStart = false;
+}
+
+function clearTrackingAndMarkNextAgentStartAsNewCycle(): void {
+  backpressureRetryCount = 0;
   turnStartSnapshot = createEmptySnapshot();
   cumulativeAgentTouchedFiles = new Set<string>();
+  shouldResetTrackingOnNextAgentStart = true;
+}
+
+function addTouchedFilesToTracking(files: readonly string[]): void {
+  for (const filePath of files) {
+    cumulativeAgentTouchedFiles.add(filePath);
+  }
+}
+
+function getCurrentlyTrackedExistingFiles(snapshot: Map<string, string>): string[] {
+  return filterExistingFiles(toSortedFilePathArray(cumulativeAgentTouchedFiles), snapshot);
+}
+
+function createAnalyzerExecutionContext() {
+  return {
+    cwd: process.cwd(),
+    execFile: async (command: string, args: readonly string[], cwd?: string) =>
+      execFileAsync(command, [...args], {
+        cwd,
+        encoding: "utf8",
+        maxBuffer: 20 * 1024 * 1024,
+      }),
+  };
+}
+
+async function loadConfigWithAppliedLogLevel(ctx: ExtensionHandlerContext, phase: "agent start" | "agent end") {
+  try {
+    const loadedConfig = await loadMetricEnforcerConfig();
+    applyConfiguredLogLevel(loadedConfig.config.logLevel);
+    logConfigWarnings(loadedConfig.warnings, ctx);
+    return loadedConfig;
+  } catch (error) {
+    const message = `Could not load metric config at ${phase}: ${error instanceof Error ? error.message : String(error)}`;
+    logError(message, configuredLogLevel, ctx);
+    return undefined;
+  }
+}
+
+async function captureTurnStartSnapshot(ctx: ExtensionHandlerContext): Promise<void> {
+  try {
+    await runGit(["rev-parse", "--is-inside-work-tree"]);
+    turnStartSnapshot = await getWorkingTreeSnapshot();
+  } catch (error) {
+    turnStartSnapshot = createEmptySnapshot();
+    const message = `Could not capture git baseline: ${error instanceof Error ? error.message : String(error)}`;
+    logError(message, configuredLogLevel, ctx);
+  }
+}
+
+function handleBackpressureResult(
+  pi: ExtensionAPI,
+  loadedConfig: LoadedMetricConfig,
+  violations: readonly Violation[],
+  ctx: ExtensionHandlerContext,
+): void {
+  const backpressureViolations = selectBackpressureViolations(violations, loadedConfig.config.backpressure);
+
+  if (backpressureViolations.length === 0) {
+    clearTrackingAndMarkNextAgentStartAsNewCycle();
+    return;
+  }
+
+  const maxBackpressureRetries = loadedConfig.config.backpressure.maxBackpressureRetries;
+
+  if (maxBackpressureRetries === -1 || backpressureRetryCount < maxBackpressureRetries) {
+    backpressureRetryCount += 1;
+    pi.sendUserMessage(formatBackpressureUserMessage(backpressureViolations));
+    return;
+  }
+
+  const retriesExhaustedMessage = formatRetriesExhaustedWarning(backpressureViolations, maxBackpressureRetries);
+  logWarning(retriesExhaustedMessage, configuredLogLevel, ctx);
+  clearTrackingAndMarkNextAgentStartAsNewCycle();
+}
+
+export default function metricEnforcer(pi: ExtensionAPI) {
+  clearTrackingAndMarkNextAgentStartAsNewCycle();
   isMetricEnforcerActive = true;
   configuredLogLevel = "warning";
-  backpressureRetryCount = 0;
-  shouldResetTrackingOnNextAgentStart = true;
 
   pi.registerCommand("activateMetricEnforcer", {
     description: "Activate metric enforcement for upcoming agent runs",
@@ -161,10 +246,7 @@ export default function metricEnforcer(pi: ExtensionAPI) {
       }
 
       isMetricEnforcerActive = false;
-      turnStartSnapshot = createEmptySnapshot();
-      cumulativeAgentTouchedFiles = new Set<string>();
-      backpressureRetryCount = 0;
-      shouldResetTrackingOnNextAgentStart = true;
+      clearTrackingAndMarkNextAgentStartAsNewCycle();
       logInfo("MetricEnforcer deactivated.", configuredLogLevel, ctx);
     },
   });
@@ -179,30 +261,11 @@ export default function metricEnforcer(pi: ExtensionAPI) {
     if (!isMetricEnforcerActive) return;
 
     if (shouldResetTrackingOnNextAgentStart) {
-      backpressureRetryCount = 0;
-      cumulativeAgentTouchedFiles = new Set<string>();
-      shouldResetTrackingOnNextAgentStart = false;
+      resetTrackingStateForNewCycle();
     }
 
-    try {
-      const loadedConfig = await loadMetricEnforcerConfig();
-      applyConfiguredLogLevel(loadedConfig.config.logLevel);
-      logConfigWarnings(loadedConfig.warnings, ctx);
-    } catch (error) {
-      const message = `Could not load metric config at agent start: ${error instanceof Error ? error.message : String(error)}`;
-      logError(message, configuredLogLevel, ctx);
-    }
-
-    try {
-      await runGit(["rev-parse", "--is-inside-work-tree"]);
-      const snapshotAtAgentStart = await getWorkingTreeSnapshot();
-
-      turnStartSnapshot = snapshotAtAgentStart;
-    } catch (error) {
-      turnStartSnapshot = createEmptySnapshot();
-      const message = `Could not capture git baseline: ${error instanceof Error ? error.message : String(error)}`;
-      logError(message, configuredLogLevel, ctx);
-    }
+    await loadConfigWithAppliedLogLevel(ctx, "agent start");
+    await captureTurnStartSnapshot(ctx);
   });
 
   pi.on("agent_end", async (_event, ctx) => {
@@ -212,26 +275,20 @@ export default function metricEnforcer(pi: ExtensionAPI) {
       const endSnapshot = await getWorkingTreeSnapshot();
       const changedByAgentThisTurn = getChangedFilesBetweenSnapshots(turnStartSnapshot, endSnapshot);
 
-      for (const filePath of changedByAgentThisTurn) {
-        cumulativeAgentTouchedFiles.add(filePath);
-      }
+      addTouchedFilesToTracking(changedByAgentThisTurn);
 
-      const loadedConfig = await loadMetricEnforcerConfig();
-      applyConfiguredLogLevel(loadedConfig.config.logLevel);
+      const loadedConfig = await loadConfigWithAppliedLogLevel(ctx, "agent end");
+      
+      if (loadedConfig === undefined) return;
 
       logInfo(formatMessageForTouchedFiles(changedByAgentThisTurn), configuredLogLevel, ctx);
-      logConfigWarnings(loadedConfig.warnings, ctx);
 
-      const existingTouchedFiles = filterExistingFiles(toSortedFilePathArray(cumulativeAgentTouchedFiles), endSnapshot);
-      const orchestrationResult = await runMetricOrchestration(existingTouchedFiles, loadedConfig.config, {
-        cwd: process.cwd(),
-        execFile: async (command, args, cwd) =>
-          execFileAsync(command, [...args], {
-            cwd,
-            encoding: "utf8",
-            maxBuffer: 20 * 1024 * 1024,
-          }),
-      });
+      const existingTouchedFiles = getCurrentlyTrackedExistingFiles(endSnapshot);
+      const orchestrationResult = await runMetricOrchestration(
+        existingTouchedFiles,
+        loadedConfig.config,
+        createAnalyzerExecutionContext(),
+      );
 
       logInfo(
         orchestrationResult.enabledAnalyzers.length === 0
@@ -247,31 +304,7 @@ export default function metricEnforcer(pi: ExtensionAPI) {
 
       logInfo(formatViolationsSummary(orchestrationResult.violations), configuredLogLevel, ctx);
 
-      const backpressureViolations = selectBackpressureViolations(
-        orchestrationResult.violations,
-        loadedConfig.config.backpressure,
-      );
-
-      if (backpressureViolations.length === 0) {
-        backpressureRetryCount = 0;
-        cumulativeAgentTouchedFiles = new Set<string>();
-        shouldResetTrackingOnNextAgentStart = true;
-        return;
-      }
-
-      const maxBackpressureRetries = loadedConfig.config.backpressure.maxBackpressureRetries;
-
-      if (maxBackpressureRetries === -1 || backpressureRetryCount < maxBackpressureRetries) {
-        backpressureRetryCount += 1;
-        pi.sendUserMessage(formatBackpressureUserMessage(backpressureViolations));
-        return;
-      }
-
-      const retriesExhaustedMessage = formatRetriesExhaustedWarning(backpressureViolations, maxBackpressureRetries);
-      logWarning(retriesExhaustedMessage, configuredLogLevel, ctx);
-      backpressureRetryCount = 0;
-      cumulativeAgentTouchedFiles = new Set<string>();
-      shouldResetTrackingOnNextAgentStart = true;
+      handleBackpressureResult(pi, loadedConfig, orchestrationResult.violations, ctx);
     } catch (error) {
       const message = `Agent loop ended, but metric enforcement failed: ${error instanceof Error ? error.message : String(error)}`;
       logError(message, configuredLogLevel, ctx);
