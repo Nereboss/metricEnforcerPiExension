@@ -23,4 +23,5 @@ export interface MetricEnforcerConfig {
   analyzers: Record<string, AnalyzerConfig>;
   thresholds: ThresholdConfig;
   backpressure: BackpressureConfig;
+  metricDefinitions: Record<string, string>;
 }

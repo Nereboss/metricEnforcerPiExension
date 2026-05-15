@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  formatBackpressureUserMessage,
+  formatBackpressureMessage,
   formatRetriesExhaustedWarning,
   selectBackpressureViolations,
 } from "../extensions/metric-enforcer/backpressure.ts";
@@ -43,13 +43,21 @@ test("selectBackpressureViolations keeps only errors when errorOnly is true", ()
   assert.equal(selected[0].severity, "error");
 });
 
-test("formatBackpressureUserMessage includes severity-specific guidance", () => {
-  const message = formatBackpressureUserMessage(violations);
+test("formatBackpressureMessage includes violations, metric definitions and guidance", () => {
+  const message = formatBackpressureMessage(violations, {
+    complexity: "Cyclomatic complexity score of the file.",
+    rloc: "Real lines of code in the file.",
+  });
 
-  assert.ok(message.includes("ERROR violations: refactor now"));
-  assert.ok(message.includes("WARNING violations: metric is close to threshold"));
+  assert.ok(message.includes("Violations:"));
   assert.ok(message.includes("ERROR: complexity=20"));
   assert.ok(message.includes("WARNING: rloc=9"));
+  assert.ok(message.includes("Metric definitions:"));
+  assert.ok(message.includes("complexity: Cyclomatic complexity score of the file."));
+  assert.ok(message.includes("rloc: Real lines of code in the file."));
+  assert.ok(message.includes("Please follow these instructions to handle the different violations:"));
+  assert.ok(message.includes("ERROR: refactor file now"));
+  assert.ok(message.includes("WARNING: metric is close to threshold"));
 });
 
 test("formatRetriesExhaustedWarning contains unresolved violations in file/metric message format", () => {

@@ -1,4 +1,6 @@
 import { execFile } from "node:child_process";
+import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import type { Violation } from "./metric-enforcer/types.ts";
@@ -6,11 +8,18 @@ import { loadMetricEnforcerConfig } from "./metric-enforcer/config/loader.ts";
 import { logError, logInfo, logWarning } from "./metric-enforcer/logger.ts";
 import { runMetricOrchestration } from "./metric-enforcer/orchestrator.ts";
 import {
-  formatBackpressureUserMessage,
-  formatRetriesExhaustedWarning,
-  selectBackpressureViolations,
+   formatBackpressureMessage,
+    formatRetriesExhaustedWarning,
+     selectBackpressureViolations,
 } from "./metric-enforcer/backpressure.ts";
 import { formatMetricValue } from "./metric-enforcer/utils.ts";
+import {
+  getMessagesFromContextEvent,
+  getSystemPromptFromBeforeAgentStartEvent,
+  pruneOldQualityGateMessages,
+  QUALITY_GATE_CUSTOM_TYPE,
+  QUALITY_GATE_POLICY_FILE_NAME,
+} from "./metric-enforcer/quality-gate.ts";
 
 const execFileAsync = promisify(execFile);
 const MISSING_FILE_HASH = "__MISSING__";
@@ -20,6 +29,7 @@ let cumulativeAgentTouchedFiles = new Set<string>();
 let isMetricEnforcerActive = true;
 let configuredLogLevel: "info" | "warning" | "error" = "warning";
 let backpressureRetryCount = 0;
+let qualityGateMessagesSentInCurrentCycle = 0;
 let shouldResetTrackingOnNextAgentStart = true;
 
 function parsePorcelainV1ZPaths(output: string): string[] {
@@ -81,17 +91,13 @@ function getChangedFilesBetweenSnapshots(before: Map<string, string>, after: Map
 }
 
 function formatMessageForTouchedFiles(files: string[]): string {
-  if (files.length === 0) {
-    return "Agent changed no files.";
-  }
+  if (files.length === 0) return "Agent changed no files.";
 
   return `Agent changed files:\n${files.join("\n")}`;
 }
 
 function formatViolationsSummary(violations: readonly Violation[]): string {
-  if (violations.length === 0) {
-    return "Metric checks passed. No threshold violations found.";
-  }
+  if (violations.length === 0) return "Metric checks passed. No threshold violations found.";
 
   const errorCount = violations.filter((violation) => violation.severity === "error").length;
   const warningCount = violations.length - errorCount;
@@ -121,6 +127,31 @@ function toSortedFilePathArray(filePaths: ReadonlySet<string>): string[] {
   return [...filePaths].sort((a, b) => a.localeCompare(b));
 }
 
+
+function getQualityGatePolicyFileUrl(): URL {
+  return new URL(`../${QUALITY_GATE_POLICY_FILE_NAME}`, import.meta.url);
+}
+
+async function loadQualityGatePolicyInstructions(ctx: ExtensionHandlerContext): Promise<string | undefined> {
+  const policyFileUrl = getQualityGatePolicyFileUrl();
+  const policyFilePath = fileURLToPath(policyFileUrl);
+
+  try {
+    const policyMarkdown = (await readFile(policyFileUrl, "utf8")).trim();
+
+    if (policyMarkdown.length === 0) {
+      logWarning(`Quality-gate policy file at ${policyFilePath} is empty.`, configuredLogLevel, ctx);
+      return undefined;
+    }
+
+    return policyMarkdown;
+  } catch (error) {
+    const errorDetails = error instanceof Error ? error.message : String(error);
+    logWarning(`Could not read quality-gate policy file at ${policyFilePath}: ${errorDetails}`, configuredLogLevel, ctx);
+    return undefined;
+  }
+}
+
 type ExtensionHandlerContext = Parameters<typeof logWarning>[2];
 type LoadedMetricConfig = Awaited<ReturnType<typeof loadMetricEnforcerConfig>>;
 
@@ -136,12 +167,14 @@ function logConfigWarnings(warnings: readonly string[], ctx: ExtensionHandlerCon
 
 function resetTrackingStateForNewCycle(): void {
   backpressureRetryCount = 0;
+  qualityGateMessagesSentInCurrentCycle = 0;
   cumulativeAgentTouchedFiles = new Set<string>();
   shouldResetTrackingOnNextAgentStart = false;
 }
 
 function clearTrackingAndMarkNextAgentStartAsNewCycle(): void {
   backpressureRetryCount = 0;
+  qualityGateMessagesSentInCurrentCycle = 0;
   turnStartSnapshot = createEmptySnapshot();
   cumulativeAgentTouchedFiles = new Set<string>();
   shouldResetTrackingOnNextAgentStart = true;
@@ -210,7 +243,15 @@ function handleBackpressureResult(
 
   if (maxBackpressureRetries === -1 || backpressureRetryCount < maxBackpressureRetries) {
     backpressureRetryCount += 1;
-    pi.sendUserMessage(formatBackpressureUserMessage(backpressureViolations));
+    pi.sendMessage(
+      {
+        customType: QUALITY_GATE_CUSTOM_TYPE,
+        content: formatBackpressureMessage(backpressureViolations, loadedConfig.config.metricDefinitions),
+        display: true,
+      },
+      { triggerTurn: true, deliverAs: "steer" },
+    );
+    qualityGateMessagesSentInCurrentCycle += 1;
     return;
   }
 
@@ -251,6 +292,30 @@ export default function metricEnforcer(pi: ExtensionAPI) {
     },
   });
 
+  pi.on("before_agent_start", async (event, ctx) => {
+    if (!isMetricEnforcerActive) return undefined;
+
+    const currentSystemPrompt = getSystemPromptFromBeforeAgentStartEvent(event);
+    const qualityGatePolicyInstructions = await loadQualityGatePolicyInstructions(ctx);
+
+    if (currentSystemPrompt === undefined || qualityGatePolicyInstructions === undefined) return undefined;
+
+    return {
+      systemPrompt: `${currentSystemPrompt}\n\n${qualityGatePolicyInstructions}`,
+    };
+  });
+
+  pi.on("context", async (event) => {
+    const messages = getMessagesFromContextEvent(event);
+
+    if (messages === undefined) return undefined;
+
+    return {
+      // filter out all messages from our extension from a previous user message from the model context
+      messages: pruneOldQualityGateMessages(messages, qualityGateMessagesSentInCurrentCycle),
+    };
+  });
+
   pi.on("input", async (event) => {
     if (event.source !== "extension") {
       shouldResetTrackingOnNextAgentStart = true;
@@ -278,7 +343,7 @@ export default function metricEnforcer(pi: ExtensionAPI) {
       addTouchedFilesToTracking(changedByAgentThisTurn);
 
       const loadedConfig = await loadConfigWithAppliedLogLevel(ctx, "agent end");
-      
+
       if (loadedConfig === undefined) return;
 
       logInfo(formatMessageForTouchedFiles(changedByAgentThisTurn), configuredLogLevel, ctx);

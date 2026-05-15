@@ -17,7 +17,13 @@
       "additionalProperties": { "$ref": "#/$defs/analyzerConfig" }
     },
     "backpressure": { "$ref": "#/$defs/backpressureConfig" },
-    "thresholds": { "$ref": "#/$defs/thresholdConfig" }
+    "thresholds": { "$ref": "#/$defs/thresholdConfig" },
+    "metricDefinitions": {
+      "type": "object",
+      "propertyNames": { "minLength": 1 },
+      "additionalProperties": { "type": "string" },
+      "default": {}
+    }
   },
   "$defs": {
     "analyzerConfig": {

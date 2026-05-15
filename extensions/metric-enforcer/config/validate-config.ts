@@ -18,6 +18,7 @@ export function validateMetricEnforcerConfig(value: unknown, sourcePath: string)
       analyzers: validateAnalyzers(root.analyzers, sourcePath),
       thresholds: validateThresholds(root.thresholds, sourcePath),
       backpressure: validateBackpressure(root.backpressure, sourcePath, warnings),
+      metricDefinitions: validateMetricDefinitions(root.metricDefinitions, sourcePath),
     },
     warnings,
   };
@@ -101,6 +102,28 @@ function validateMaxBackpressureRetries(value: unknown, sourcePath: string, warn
   }
 
   return value;
+}
+
+function validateMetricDefinitions(value: unknown, sourcePath: string): Record<string, string> {
+  if (value === undefined) return {};
+
+  const definitions = expectObject(value, `"metricDefinitions" in ${sourcePath}`);
+
+  return Object.fromEntries(
+    Object.entries(definitions).map(([metricName, definition]) => {
+      if (metricName.trim().length === 0) {
+        throw new Error(`[metric-enforcer] "metricDefinitions" in ${sourcePath} must not contain empty metric names.`);
+      }
+
+      if (typeof definition !== "string") {
+        throw new Error(
+          `[metric-enforcer] "metricDefinitions" in ${sourcePath}["${metricName}"] must be a string.`,
+        );
+      }
+
+      return [metricName, definition];
+    }),
+  );
 }
 
 function validateFilePatternRulesMap(value: unknown, context: string): Record<string, Record<string, MetricRule>> {

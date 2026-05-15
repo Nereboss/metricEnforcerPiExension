@@ -32,7 +32,9 @@ Agent behavior guidelines
 Coding standards
 ----------------
 - Parameter naming: Use consistent, descriptive names across related functions
-- Keep modules small and focused; avoid huge files.
+- Keep modules small and focused; avoid huge files
+- Place domain/event/message interfaces in focused module files (e.g. `types.ts` or feature-specific helper modules)
+- Prefer single-line guard clauses for simple early returns when line length stays readable, e.g. `if (!condition) return;`
 
 Testing
 -------

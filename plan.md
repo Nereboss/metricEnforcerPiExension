@@ -105,6 +105,10 @@ Recommended approach:
 7. ✅ **Notification/logging layer**
    - centralized `MetricEnforcerLogger` class for extension messaging.
    - config-driven filtering via `logLevel` (`info` | `warning` | `error`, default `warning`).
+   - quality backpressure is delivered as extension custom messages (`customType: "quality-gate"`) to avoid changing user intent.
+   - per-turn quality-gate handling instructions are injected via `before_agent_start` from `metric-enforcer-quality-gate-policy.md` in extension repository root.
+   - quality-gate context pruning keeps only quality-gate messages from the current user round.
+   - quality-gate messages include a `Metric definitions` section sourced from `metricDefinitions` in config.
 
 8. ✅ **Tests (minimal but critical)**
    - ccsh parser test with `sample_cc.json`

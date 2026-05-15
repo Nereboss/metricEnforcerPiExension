@@ -9,12 +9,25 @@ import metricEnforcer from "../extensions/metric-enforcer.ts";
 
 const execFileAsync = promisify(execFile);
 
+interface SentCustomMessage {
+  message: {
+    customType: string;
+    content: string;
+    display?: boolean;
+  };
+  options?: {
+    triggerTurn?: boolean;
+    deliverAs?: string;
+  };
+}
+
 class FakePi {
-  private handlers = new Map<string, Array<(event: unknown, ctx: TestContext) => Promise<void>>>();
+  private handlers = new Map<string, Array<(event: unknown, ctx: TestContext) => Promise<unknown> | unknown>>();
   private commands = new Map<string, (args: string, ctx: TestContext) => Promise<void>>();
   private userMessages: string[] = [];
+  private customMessages: SentCustomMessage[] = [];
 
-  on(eventName: string, handler: (event: unknown, ctx: TestContext) => Promise<void>): void {
+  on(eventName: string, handler: (event: unknown, ctx: TestContext) => Promise<unknown> | unknown): void {
     const existing = this.handlers.get(eventName) ?? [];
     existing.push(handler);
     this.handlers.set(eventName, existing);
@@ -24,11 +37,15 @@ class FakePi {
     this.commands.set(_name, options.handler);
   }
 
-  async emit(eventName: string, ctx: TestContext, event: Record<string, unknown> = {}): Promise<void> {
+  async emit(eventName: string, ctx: TestContext, event: Record<string, unknown> = {}): Promise<unknown[]> {
     const eventHandlers = this.handlers.get(eventName) ?? [];
+    const results: unknown[] = [];
+
     for (const handler of eventHandlers) {
-      await handler(event, ctx);
+      results.push(await handler(event, ctx));
     }
+
+    return results;
   }
 
   async invokeCommand(name: string, args: string, ctx: TestContext): Promise<void> {
@@ -45,12 +62,16 @@ class FakePi {
     this.userMessages.push(content);
   }
 
+  sendMessage(message: SentCustomMessage["message"], options?: SentCustomMessage["options"]): void {
+    this.customMessages.push({ message, options });
+  }
+
   getSentUserMessages(): string[] {
     return [...this.userMessages];
   }
 
-  clearSentUserMessages(): void {
-    this.userMessages = [];
+  getSentCustomMessages(): SentCustomMessage[] {
+    return [...this.customMessages];
   }
 
   getRegisteredEventNames(): string[] {
@@ -74,9 +95,102 @@ test("metric-enforcer registers expected lifecycle handlers", () => {
   const fakePi = new FakePi();
   metricEnforcer(fakePi as never);
 
-  assert.deepEqual(fakePi.getRegisteredEventNames(), ["agent_end", "agent_start", "input"]);
+  assert.deepEqual(fakePi.getRegisteredEventNames(), ["agent_end", "agent_start", "before_agent_start", "context", "input"]);
 });
 
+test("metric-enforcer appends quality-gate policy from the extension repository", async () => {
+  const previousCwd = process.cwd();
+  const tempRepo = await mkdtemp(join(tmpdir(), "metric-enforcer-policy-test-"));
+
+  try {
+    process.chdir(tempRepo);
+
+    const ctx: TestContext = {
+      hasUI: true,
+      ui: {
+        notify() {
+          // noop
+        },
+      },
+    };
+
+    const fakePi = new FakePi();
+    metricEnforcer(fakePi as never);
+
+    const [beforeAgentStartResult] = await fakePi.emit("before_agent_start", ctx, { systemPrompt: "BASE_PROMPT" });
+
+    assert.equal(typeof beforeAgentStartResult, "object");
+    assert.ok(
+      (beforeAgentStartResult as { systemPrompt: string }).systemPrompt.includes(
+        "Messages with customType \"quality-gate\" come from an extension judging code quality.",
+      ),
+    );
+  } finally {
+    process.chdir(previousCwd);
+  }
+});
+
+test("metric-enforcer ignores quality policy files from the user project cwd", async () => {
+  const previousCwd = process.cwd();
+  const tempRepo = await mkdtemp(join(tmpdir(), "metric-enforcer-cwd-policy-test-"));
+
+  try {
+    process.chdir(tempRepo);
+    await writeFile(
+      "metric-enforcer-quality-gate-policy.md",
+      "# User project policy\n- NEVER USE THIS POLICY FROM CWD",
+      "utf8",
+    );
+
+    const ctx: TestContext = {
+      hasUI: true,
+      ui: {
+        notify() {
+          // noop
+        },
+      },
+    };
+
+    const fakePi = new FakePi();
+    metricEnforcer(fakePi as never);
+
+    const [beforeAgentStartResult] = await fakePi.emit("before_agent_start", ctx, { systemPrompt: "BASE_PROMPT" });
+    const systemPrompt = (beforeAgentStartResult as { systemPrompt: string }).systemPrompt;
+
+    assert.equal(systemPrompt.includes("NEVER USE THIS POLICY FROM CWD"), false);
+    assert.ok(systemPrompt.includes("continue the current user objective"));
+  } finally {
+    process.chdir(previousCwd);
+  }
+});
+
+test("metric-enforcer context hook uses current-cycle tracking to prune quality-gate messages", async () => {
+  const ctx: TestContext = {
+    hasUI: true,
+    ui: {
+      notify() {
+        // noop
+      },
+    },
+  };
+
+  const fakePi = new FakePi();
+  metricEnforcer(fakePi as never);
+
+  const [contextWithoutCurrentCycleQualityMessages] = await fakePi.emit("context", ctx, {
+    messages: [
+      { role: "custom", customType: "quality-gate", content: "old gate 1" },
+      { role: "assistant", content: "assistant output" },
+      { role: "custom", customType: "quality-gate", content: "old gate 2" },
+    ],
+  });
+
+  const prunedWithoutCurrentCycle = (
+    contextWithoutCurrentCycleQualityMessages as { messages: Array<{ content?: string; role: string }> }
+  ).messages;
+
+  assert.equal(prunedWithoutCurrentCycle.some((message) => message.role === "custom"), false);
+});
 
 test("deactivateMetricEnforcer disables metric checks until reactivated", async () => {
   const previousCwd = process.cwd();
@@ -264,7 +378,7 @@ test("metric-enforcer falls back to warning logLevel when config logLevel is inv
   }
 });
 
-test("metric-enforcer sends warning backpressure as user message", async () => {
+test("metric-enforcer sends warning backpressure as quality-gate custom message", async () => {
   const previousCwd = process.cwd();
   const tempRepo = await mkdtemp(join(tmpdir(), "metric-enforcer-warning-backpressure-test-"));
 
@@ -302,6 +416,9 @@ test("metric-enforcer sends warning backpressure as user message", async () => {
             },
             filePatterns: {},
           },
+          metricDefinitions: {
+            complexity: "Cyclomatic complexity score of the touched file.",
+          },
         },
         null,
         2,
@@ -326,10 +443,19 @@ test("metric-enforcer sends warning backpressure as user message", async () => {
     await writeFile("sample.ts", "export const x = 2;\n", "utf8");
     await fakePi.emit("agent_end", ctx);
 
-    const sentUserMessages = fakePi.getSentUserMessages();
-    assert.equal(sentUserMessages.length, 1);
-    assert.ok(sentUserMessages[0].includes("WARNING"));
-    assert.ok(sentUserMessages[0].includes("consider refactoring"));
+    const sentCustomMessages = fakePi.getSentCustomMessages();
+    assert.equal(sentCustomMessages.length, 1);
+    assert.equal(sentCustomMessages[0].message.customType, "quality-gate");
+    assert.equal(sentCustomMessages[0].options?.deliverAs, "steer");
+    assert.equal(sentCustomMessages[0].options?.triggerTurn, true);
+    assert.ok(sentCustomMessages[0].message.content.includes("WARNING"));
+    assert.ok(sentCustomMessages[0].message.content.includes("Metric definitions:"));
+    assert.ok(
+      sentCustomMessages[0].message.content.includes("complexity: Cyclomatic complexity score of the touched file."),
+    );
+    assert.ok(sentCustomMessages[0].message.content.includes("Please follow these instructions to handle the different violations:"));
+    assert.ok(sentCustomMessages[0].message.content.includes("consider refactoring"));
+    assert.equal(fakePi.getSentUserMessages().length, 0);
   } finally {
     process.chdir(previousCwd);
   }
@@ -396,13 +522,13 @@ test("metric-enforcer stops backpressure when max retries are exhausted", async 
     await fakePi.emit("agent_start", ctx);
     await writeFile("sample.ts", "export const x = 2;\n", "utf8");
     await fakePi.emit("agent_end", ctx);
-    assert.equal(fakePi.getSentUserMessages().length, 1);
+    assert.equal(fakePi.getSentCustomMessages().length, 1);
 
     await fakePi.emit("agent_start", ctx);
     await writeFile("sample.ts", "export const x = 3;\n", "utf8");
     await fakePi.emit("agent_end", ctx);
 
-    assert.equal(fakePi.getSentUserMessages().length, 1);
+    assert.equal(fakePi.getSentCustomMessages().length, 1);
     assert.ok(notifications.some((entry) => entry.message.includes("could not fix")));
   } finally {
     process.chdir(previousCwd);
@@ -470,12 +596,12 @@ test("metric-enforcer keeps checking files touched in earlier turns during backp
     await fakePi.emit("agent_start", ctx);
     await writeFile("sample.ts", "export const x = 2;\n", "utf8");
     await fakePi.emit("agent_end", ctx);
-    assert.equal(fakePi.getSentUserMessages().length, 1);
+    assert.equal(fakePi.getSentCustomMessages().length, 1);
 
     await fakePi.emit("agent_start", ctx);
     await fakePi.emit("agent_end", ctx);
 
-    assert.equal(fakePi.getSentUserMessages().length, 1);
+    assert.equal(fakePi.getSentCustomMessages().length, 1);
     assert.ok(notifications.some((entry) => entry.message.includes("could not fix")));
   } finally {
     process.chdir(previousCwd);
@@ -544,13 +670,13 @@ test("metric-enforcer resets tracked files when a real user message starts a new
     await fakePi.emit("agent_start", ctx);
     await writeFile("sample.ts", "export const x = 2;\n", "utf8");
     await fakePi.emit("agent_end", ctx);
-    assert.equal(fakePi.getSentUserMessages().length, 1);
+    assert.equal(fakePi.getSentCustomMessages().length, 1);
 
     await fakePi.emit("input", ctx, { source: "interactive" });
     await fakePi.emit("agent_start", ctx);
     await fakePi.emit("agent_end", ctx);
 
-    assert.equal(fakePi.getSentUserMessages().length, 1);
+    assert.equal(fakePi.getSentCustomMessages().length, 1);
     assert.equal(notifications.some((entry) => entry.message.includes("could not fix")), false);
   } finally {
     process.chdir(previousCwd);
