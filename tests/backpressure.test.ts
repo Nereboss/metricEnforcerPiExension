@@ -55,7 +55,7 @@ test("formatBackpressureMessage includes violations, metric definitions and guid
   assert.ok(message.includes("Metric definitions:"));
   assert.ok(message.includes("complexity: Cyclomatic complexity score of the file."));
   assert.ok(message.includes("rloc: Real lines of code in the file."));
-  assert.ok(message.includes("Please follow these instructions to handle the different violations:"));
+  assert.ok(message.includes("Follow these instructions to handle the different violations:"));
   assert.ok(message.includes("ERROR: refactor file now"));
   assert.ok(message.includes("WARNING: metric is close to threshold"));
 });

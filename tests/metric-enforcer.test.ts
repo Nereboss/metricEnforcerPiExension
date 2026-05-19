@@ -453,7 +453,7 @@ test("metric-enforcer sends warning backpressure as quality-gate custom message"
     assert.ok(
       sentCustomMessages[0].message.content.includes("complexity: Cyclomatic complexity score of the touched file."),
     );
-    assert.ok(sentCustomMessages[0].message.content.includes("Please follow these instructions to handle the different violations:"));
+    assert.ok(sentCustomMessages[0].message.content.includes("Follow these instructions to handle the different violations:"));
     assert.ok(sentCustomMessages[0].message.content.includes("consider refactoring"));
     assert.equal(fakePi.getSentUserMessages().length, 0);
   } finally {

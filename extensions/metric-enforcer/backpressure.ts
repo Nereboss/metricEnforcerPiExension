@@ -6,7 +6,7 @@ const BACKPRESSURE_MESSAGE_HEADER_LINES = ["MetricEnforcer detected threshold is
 
 const BACKPRESSURE_MESSAGE_INSTRUCTION_LINES = [
   "",
-  "Please follow these instructions to handle the different violations:",
+  "Follow these instructions to handle the different violations:",
   "- ERROR: refactor file now to reduce the metric below its error threshold.",
   "- WARNING: metric is close to threshold. Next time the file is edited, consider refactoring to reduce it.",
 ] as const;
