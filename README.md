@@ -8,8 +8,6 @@ MetricEnforcer adds an automated quality gate to your PI workflow. It tracks fil
 
 ## Installation
 
-> This section is a first draft and can be refined once your final publishing channel is fixed (npm/private registry/Git URL).
-
 ### Requisites
 - PI coding agent
 - Enabled code analyzers are installed and available in `PATH` (by default, `ccsh` from [CodeCharta](https://codecharta.com/))
