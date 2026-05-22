@@ -20,12 +20,12 @@ Core principles
 
 Agent behavior guidelines
 -------------------------
-- Read before writing: Always read @plan.md and the most relevant source files before making changes.
+- Read before writing: Always read the most relevant source files before making changes.
 - Ask when unsure: If requirements are ambiguous, ask a clarifying question instead of guessing.
 - Prevent future mistakes: When you made a mistake and the user corrects you, adjust this AGENTS.md file to avoid that mistake in the future.
 - Keep domain semantics strict: If thresholds use sentinel values (e.g. -1 means ignore), implement and preserve that behavior explicitly in evaluators and normalization logic.
 - Avoid adding non-essential fields to shared output contracts unless required by the agreed user-facing behavior.
-- State updates: After making changes that affect design or plan, update @plan.md and this AGENTS.md if necessary.
+- State updates: After making changes that affect design, update this AGENTS.md if necessary.
 - Keep public API docs up to date (README, README sections for extensions, examples).
 - After code changes, execute `npm run test` to see if all tests pass
 
