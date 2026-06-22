@@ -23,6 +23,9 @@ import {
 
 const execFileAsync = promisify(execFile);
 const MISSING_FILE_HASH = "__MISSING__";
+const GIT_UNAVAILABLE_MESSAGE =
+  "The current directory is not a git repository. " +
+  "Metric enforcer relies on git to detect changed files, it has been deactivated.";
 
 let turnStartSnapshot = createEmptySnapshot();
 let cumulativeAgentTouchedFiles = new Set<string>();
@@ -31,6 +34,7 @@ let configuredLogLevel: "info" | "warning" | "error" = "warning";
 let backpressureRetryCount = 0;
 let qualityGateMessagesSentInCurrentCycle = 0;
 let shouldResetTrackingOnNextAgentStart = true;
+let gitUnavailableNoticeShown = false;
 
 function parsePorcelainV1ZPaths(output: string): string[] {
   const entries = output.split("\0").filter((entry) => entry.length > 0);
@@ -61,6 +65,15 @@ function parsePorcelainV1ZPaths(output: string): string[] {
 
 async function runGit(args: readonly string[]) {
   return execFileAsync("git", args, { encoding: "utf8" });
+}
+
+async function isInsideGitRepository(): Promise<boolean> {
+  try {
+    await runGit(["rev-parse", "--is-inside-work-tree"]);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function getWorkingTreeSnapshot(): Promise<Map<string, string>> {
@@ -217,13 +230,26 @@ async function loadConfigWithAppliedLogLevel(ctx: ExtensionHandlerContext, phase
 
 async function captureTurnStartSnapshot(ctx: ExtensionHandlerContext): Promise<void> {
   try {
-    await runGit(["rev-parse", "--is-inside-work-tree"]);
     turnStartSnapshot = await getWorkingTreeSnapshot();
   } catch (error) {
     turnStartSnapshot = createEmptySnapshot();
     const message = `Could not capture git baseline: ${error instanceof Error ? error.message : String(error)}`;
     logError(message, configuredLogLevel, ctx);
   }
+}
+
+// Returns true when metric enforcement can run. When the directory is not a git
+// repository it surfaces a single error so the user knows the extension is
+// inactive, then stays silent on subsequent events to avoid repeated failures.
+async function ensureGitRepositoryAvailable(ctx: ExtensionHandlerContext): Promise<boolean> {
+  if (await isInsideGitRepository()) return true;
+
+  if (!gitUnavailableNoticeShown) {
+    logError(GIT_UNAVAILABLE_MESSAGE, configuredLogLevel, ctx);
+    gitUnavailableNoticeShown = true;
+  }
+
+  return false;
 }
 
 function handleBackpressureResult(
@@ -264,10 +290,22 @@ export default function metricEnforcer(pi: ExtensionAPI) {
   clearTrackingAndMarkNextAgentStartAsNewCycle();
   isMetricEnforcerActive = true;
   configuredLogLevel = "warning";
+  gitUnavailableNoticeShown = false;
+
+  // Surface the "not a git repository" error once when the extension loads so
+  // the user knows it cannot work here, before any agent run is attempted.
+  pi.on("session_start", async (_event, ctx) => {
+    await ensureGitRepositoryAvailable(ctx);
+  });
 
   pi.registerCommand("activateMetricEnforcer", {
     description: "Activate metric enforcement for upcoming agent runs",
     handler: async (_args, ctx) => {
+      if (!(await isInsideGitRepository())) {
+        logError(GIT_UNAVAILABLE_MESSAGE, configuredLogLevel, ctx);
+        return;
+      }
+
       if (isMetricEnforcerActive) {
         logInfo("MetricEnforcer is already active.", configuredLogLevel, ctx);
         return;
@@ -324,6 +362,7 @@ export default function metricEnforcer(pi: ExtensionAPI) {
 
   pi.on("agent_start", async (_event, ctx) => {
     if (!isMetricEnforcerActive) return;
+    if (!(await ensureGitRepositoryAvailable(ctx))) return;
 
     if (shouldResetTrackingOnNextAgentStart) {
       resetTrackingStateForNewCycle();
@@ -335,6 +374,7 @@ export default function metricEnforcer(pi: ExtensionAPI) {
 
   pi.on("agent_end", async (_event, ctx) => {
     if (!isMetricEnforcerActive) return;
+    if (!(await ensureGitRepositoryAvailable(ctx))) return;
 
     try {
       const endSnapshot = await getWorkingTreeSnapshot();

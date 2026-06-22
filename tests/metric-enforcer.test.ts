@@ -95,7 +95,60 @@ test("metric-enforcer registers expected lifecycle handlers", () => {
   const fakePi = new FakePi();
   metricEnforcer(fakePi as never);
 
-  assert.deepEqual(fakePi.getRegisteredEventNames(), ["agent_end", "agent_start", "before_agent_start", "context", "input"]);
+  assert.deepEqual(fakePi.getRegisteredEventNames(), [
+    "agent_end",
+    "agent_start",
+    "before_agent_start",
+    "context",
+    "input",
+    "session_start",
+  ]);
+});
+
+test("metric-enforcer shows a single error in a non-git directory and then stays silent", async () => {
+  const previousCwd = process.cwd();
+  const tempDir = await mkdtemp(join(tmpdir(), "metric-enforcer-non-git-test-"));
+
+  try {
+    process.chdir(tempDir);
+
+    const notifications: Notification[] = [];
+    const ctx: TestContext = {
+      hasUI: true,
+      ui: {
+        notify(message, level) {
+          notifications.push({ message, level });
+        },
+      },
+    };
+
+    const fakePi = new FakePi();
+    metricEnforcer(fakePi as never);
+
+    await fakePi.emit("session_start", ctx, { reason: "startup" });
+
+    // The load-time notice is a single error so the user knows it is inactive.
+    assert.equal(notifications.length, 1);
+    assert.equal(notifications[0].level, "error");
+    assert.ok(notifications[0].message.includes("not a git repository"));
+
+    // Subsequent events must stay silent instead of throwing fatal git errors.
+    await fakePi.emit("before_agent_start", ctx, { systemPrompt: "BASE_PROMPT" });
+    await fakePi.emit("agent_start", ctx);
+    await writeFile("sample.ts", "export const x = 1;\n", "utf8");
+    await fakePi.emit("agent_end", ctx);
+
+    assert.equal(notifications.length, 1);
+
+    // The activate command surfaces the same error so the user is reminded.
+    await fakePi.invokeCommand("activateMetricEnforcer", "", ctx);
+
+    assert.equal(notifications.length, 2);
+    assert.equal(notifications[1].level, "error");
+    assert.ok(notifications[1].message.includes("not a git repository"));
+  } finally {
+    process.chdir(previousCwd);
+  }
 });
 
 test("metric-enforcer appends quality-gate policy from the extension repository", async () => {
