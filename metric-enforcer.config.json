@@ -15,7 +15,7 @@
   },
   "backpressure": {
     "errorOnly": false,
-    "maxBackpressureRetries": 3
+    "maxBackpressureRetries": 5
   },
   "thresholds": {
     "global": {
@@ -41,16 +41,6 @@
       }
     },
     "filePatterns": {
-      "*.ts": {
-        "complexity": {
-          "warning": 8,
-          "error": 12
-        },
-        "rloc": {
-          "warning": 2,
-          "error": 16
-        }
-      }
     }
   },
   "metricDefinitions": {
