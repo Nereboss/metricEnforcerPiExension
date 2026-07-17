@@ -175,7 +175,7 @@ test("metric-enforcer appends quality-gate policy from the extension repository"
     assert.equal(typeof beforeAgentStartResult, "object");
     assert.ok(
       (beforeAgentStartResult as { systemPrompt: string }).systemPrompt.includes(
-        "Messages with customType \"MetricEnforcer\" come from an extension judging code quality.",
+        "come from an extension judging code quality.",
       ),
     );
   } finally {

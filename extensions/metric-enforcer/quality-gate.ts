@@ -50,7 +50,7 @@ export function formatMetricDefinitionsSection(
   if (definedMetrics.length === 0) return undefined;
 
   return [
-    "Metric definitions (referenced by the MetricEnforcer violation messages):",
+    "Metrics you may see in MetricEnforcer messages:",
     ...definedMetrics.map(([metric, definition]) => `- ${metric}: ${definition}`),
   ].join("\n");
 }

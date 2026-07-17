@@ -13,6 +13,14 @@ export interface AnalyzerPlugin<TConfig extends object, TContext extends object>
   readonly name: string;
 
   /**
+   * Human-readable definitions for the metrics this analyzer emits, keyed by metric name.
+   * These are surfaced once in the system-prompt policy so the model can interpret the metric
+   * names that appear in MetricEnforcer messages. The analyzer that produces a metric owns its
+   * definition; project config may override individual entries.
+   */
+  readonly metricDefinitions: Readonly<Record<string, string>>;
+
+  /**
    * Returns whether this analyzer should run for the provided config.
    *
    * @param config - Parsed extension configuration.

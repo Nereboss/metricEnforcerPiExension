@@ -13,6 +13,46 @@ interface MetricAnalyzerExecution {
 
 const analyzerPlugins: AnalyzerPlugin<MetricEnforcerConfig, CcshAnalyzerContext>[] = [ccshAnalyzerPlugin];
 
+export interface CollectedMetricDefinitions {
+  definitions: Record<string, string>;
+  warnings: string[];
+}
+
+/**
+ * Gathers metric definitions from the enabled analyzers so the system-prompt policy only describes
+ * metrics that can actually appear this run. The analyzer that emits a metric owns its definition;
+ * config.metricDefinitions is layered on top as a per-key override. Conflicting definitions between
+ * two enabled analyzers are surfaced as warnings rather than resolved silently.
+ */
+export function collectMetricDefinitions(config: MetricEnforcerConfig): CollectedMetricDefinitions {
+  const enabledPlugins = analyzerPlugins.filter((plugin) => plugin.isEnabled(config));
+  const definitions: Record<string, string> = {};
+  const definingPluginByMetric = new Map<string, string>();
+  const warnings: string[] = [];
+
+  for (const plugin of enabledPlugins) {
+    for (const [metric, definition] of Object.entries(plugin.metricDefinitions)) {
+      const previousPlugin = definingPluginByMetric.get(metric);
+
+      if (previousPlugin !== undefined && definitions[metric] !== definition) {
+        warnings.push(
+          `Metric "${metric}" is defined by analyzers "${previousPlugin}" and "${plugin.name}" with conflicting definitions. Using the one from "${plugin.name}".`,
+        );
+      }
+
+      definitions[metric] = definition;
+      definingPluginByMetric.set(metric, plugin.name);
+    }
+  }
+
+  // Project config overrides analyzer-provided definitions for the same metric name.
+  for (const [metric, definition] of Object.entries(config.metricDefinitions)) {
+    definitions[metric] = definition;
+  }
+
+  return { definitions, warnings };
+}
+
 export interface OrchestrationResult {
   enabledAnalyzers: string[];
   analyzedFiles: string[];

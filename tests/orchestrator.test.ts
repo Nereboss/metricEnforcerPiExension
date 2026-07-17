@@ -2,8 +2,19 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { runMetricOrchestration } from "../extensions/metric-enforcer/orchestrator.ts";
+import { collectMetricDefinitions, runMetricOrchestration } from "../extensions/metric-enforcer/orchestrator.ts";
 import type { MetricEnforcerConfig } from "../extensions/metric-enforcer/config/types.ts";
+
+function makeConfig(overrides: Partial<MetricEnforcerConfig> = {}): MetricEnforcerConfig {
+  return {
+    logLevel: "warning",
+    analyzers: { ccsh: { enabled: true, command: "ccsh", args: [] } },
+    thresholds: { global: {}, filePatterns: {} },
+    backpressure: { errorOnly: false, maxBackpressureRetries: 3 },
+    metricDefinitions: {},
+    ...overrides,
+  };
+}
 
 const sampleCcshUnifiedParserJson = JSON.stringify({
   data: {
@@ -205,4 +216,30 @@ test("orchestrator skips disabled analyzers", async () => {
   assert.deepEqual(result.enabledAnalyzers, []);
   assert.deepEqual(result.analyzerResults, []);
   assert.deepEqual(result.violations, []);
+});
+
+test("collectMetricDefinitions returns definitions from the enabled ccsh analyzer", () => {
+  const { definitions, warnings } = collectMetricDefinitions(makeConfig());
+
+  assert.equal(warnings.length, 0);
+  assert.ok(definitions.complexity.length > 0);
+  assert.ok(definitions.loc.length > 0);
+  assert.ok(definitions.rloc.length > 0);
+});
+
+test("collectMetricDefinitions omits definitions when the analyzer is disabled", () => {
+  const { definitions } = collectMetricDefinitions(
+    makeConfig({ analyzers: { ccsh: { enabled: false, command: "ccsh", args: [] } } }),
+  );
+
+  assert.deepEqual(definitions, {});
+});
+
+test("collectMetricDefinitions lets config override an analyzer definition", () => {
+  const { definitions } = collectMetricDefinitions(
+    makeConfig({ metricDefinitions: { complexity: "Custom wording.", extra: "A config-only metric." } }),
+  );
+
+  assert.equal(definitions.complexity, "Custom wording.");
+  assert.equal(definitions.extra, "A config-only metric.");
 });

@@ -6,7 +6,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import type { Violation } from "./metric-enforcer/types.ts";
 import { loadMetricEnforcerConfig } from "./metric-enforcer/config/loader.ts";
 import { logError, logInfo, logWarning } from "./metric-enforcer/logger.ts";
-import { runMetricOrchestration } from "./metric-enforcer/orchestrator.ts";
+import { collectMetricDefinitions, runMetricOrchestration } from "./metric-enforcer/orchestrator.ts";
 import {
   formatBackpressureMessage,
   formatRetriesExhaustedWarning,
@@ -169,22 +169,30 @@ async function loadQualityGatePolicyInstructions(ctx: ExtensionHandlerContext): 
 }
 
 /**
- * Appends the configured metric definitions to the quality-gate policy so the model receives them
- * once in the system prompt rather than on every backpressure message. If the config cannot be loaded
- * we keep the policy as-is: missing definitions degrade the guidance but should not block the run.
+ * Appends the metric definitions to the quality-gate policy so the model receives them once in the
+ * system prompt rather than on every backpressure message. Definitions come from the enabled analyzers
+ * (the tools that emit the metrics), so only metrics that can appear this run are described; config can
+ * override individual entries. If the config cannot be loaded we keep the policy as-is: missing
+ * definitions degrade the guidance but should not block the run.
  */
 async function appendMetricDefinitionsToPolicy(policy: string, ctx: ExtensionHandlerContext): Promise<string> {
-  let metricDefinitions: Readonly<Record<string, string>>;
+  let config: LoadedMetricConfig["config"];
 
   try {
-    metricDefinitions = (await loadMetricEnforcerConfig()).config.metricDefinitions;
+    config = (await loadMetricEnforcerConfig()).config;
   } catch (error) {
     const errorDetails = error instanceof Error ? error.message : String(error);
     logWarningOncePerTurn(`Could not load metric definitions for the system prompt: ${errorDetails}`, ctx);
     return policy;
   }
 
-  const definitionsSection = formatMetricDefinitionsSection(metricDefinitions);
+  const { definitions, warnings } = collectMetricDefinitions(config);
+
+  for (const warning of warnings) {
+    logWarningOncePerTurn(warning, ctx);
+  }
+
+  const definitionsSection = formatMetricDefinitionsSection(definitions);
   return definitionsSection === undefined ? policy : `${policy}\n\n${definitionsSection}`;
 }
 

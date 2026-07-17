@@ -9,7 +9,7 @@ test("formatMetricDefinitionsSection lists defined metrics sorted alphabetically
   });
 
   assert.ok(section !== undefined);
-  assert.ok(section.includes("Metric definitions (referenced by the MetricEnforcer violation messages):"));
+  assert.ok(section.includes("Metrics you may see in MetricEnforcer messages:"));
   const complexityIndex = section.indexOf("- complexity:");
   const rlocIndex = section.indexOf("- rloc:");
   assert.ok(complexityIndex >= 0 && rlocIndex >= 0);
