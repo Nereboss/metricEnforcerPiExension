@@ -1,4 +1,5 @@
-export const QUALITY_GATE_CUSTOM_TYPE = "quality-gate";
+// Doubles as the title pi shows for these custom messages, so it is the user-facing name.
+export const QUALITY_GATE_CUSTOM_TYPE = "MetricEnforcer";
 export const QUALITY_GATE_POLICY_FILE_NAME = "metric-enforcer-quality-gate-policy.md";
 
 interface ContextMessageShape {
@@ -31,6 +32,27 @@ function isQualityGateMessage(message: unknown): boolean {
 
   const typedMessage = message as ContextMessageShape;
   return typedMessage.role === "custom" && typedMessage.customType === QUALITY_GATE_CUSTOM_TYPE;
+}
+
+/**
+ * Renders the configured metric definitions as a section for the system-prompt policy, so the model
+ * has them once up front instead of on every backpressure message. Metrics without a definition are
+ * skipped. Returns undefined when there is nothing to add, so callers can leave the policy untouched.
+ */
+export function formatMetricDefinitionsSection(
+  metricDefinitions: Readonly<Record<string, string>>,
+): string | undefined {
+  const definedMetrics = Object.entries(metricDefinitions)
+    .map(([metric, definition]) => [metric, definition.trim()] as const)
+    .filter(([, definition]) => definition.length > 0)
+    .sort(([left], [right]) => left.localeCompare(right));
+
+  if (definedMetrics.length === 0) return undefined;
+
+  return [
+    "Metric definitions (referenced by the MetricEnforcer violation messages):",
+    ...definedMetrics.map(([metric, definition]) => `- ${metric}: ${definition}`),
+  ].join("\n");
 }
 
 export function getSystemPromptFromBeforeAgentStartEvent(event: unknown): string | undefined {

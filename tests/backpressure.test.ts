@@ -43,21 +43,20 @@ test("selectBackpressureViolations keeps only errors when errorOnly is true", ()
   assert.equal(selected[0].severity, "error");
 });
 
-test("formatBackpressureMessage includes violations, metric definitions and guidance", () => {
-  const message = formatBackpressureMessage(violations, {
-    complexity: "Cyclomatic complexity score of the file.",
-    rloc: "Real lines of code in the file.",
-  });
+test("formatBackpressureMessage lists violations grouped by file with directional bounds", () => {
+  const message = formatBackpressureMessage(violations);
 
-  assert.ok(message.includes("Violations:"));
-  assert.ok(message.includes("ERROR: complexity=20"));
-  assert.ok(message.includes("WARNING: rloc=9"));
-  assert.ok(message.includes("Metric definitions:"));
-  assert.ok(message.includes("complexity: Cyclomatic complexity score of the file."));
-  assert.ok(message.includes("rloc: Real lines of code in the file."));
-  assert.ok(message.includes("Follow these instructions to handle the different violations:"));
-  assert.ok(message.includes("ERROR: refactor file now"));
-  assert.ok(message.includes("WARNING: metric is close to threshold"));
+  assert.ok(message.includes("- src/a.ts"));
+  assert.ok(message.includes("ERROR complexity 20 (max 15)"));
+  assert.ok(message.includes("WARNING rloc 9 (max 8)"));
+});
+
+test("formatBackpressureMessage omits static guidance and definitions now carried by the system prompt", () => {
+  const message = formatBackpressureMessage(violations);
+
+  assert.ok(!message.includes("Metric definitions:"));
+  assert.ok(!message.includes("Follow these instructions"));
+  assert.ok(!message.includes("not part of the main conversation"));
 });
 
 test("formatRetriesExhaustedWarning contains unresolved violations in file/metric message format", () => {
@@ -65,6 +64,6 @@ test("formatRetriesExhaustedWarning contains unresolved violations in file/metri
 
   assert.ok(warning.includes("after 3 allowed backpressure retries"));
   assert.ok(warning.includes("- src/a.ts"));
-  assert.ok(warning.includes("ERROR: complexity=20"));
-  assert.ok(warning.includes("WARNING: rloc=9"));
+  assert.ok(warning.includes("ERROR complexity 20 (max 15)"));
+  assert.ok(warning.includes("WARNING rloc 9 (max 8)"));
 });

@@ -175,7 +175,7 @@ test("metric-enforcer appends quality-gate policy from the extension repository"
     assert.equal(typeof beforeAgentStartResult, "object");
     assert.ok(
       (beforeAgentStartResult as { systemPrompt: string }).systemPrompt.includes(
-        "Messages with customType \"quality-gate\" come from an extension judging code quality.",
+        "Messages with customType \"MetricEnforcer\" come from an extension judging code quality.",
       ),
     );
   } finally {
@@ -232,9 +232,9 @@ test("metric-enforcer context hook uses current-cycle tracking to prune quality-
 
   const [contextWithoutCurrentCycleQualityMessages] = await fakePi.emit("context", ctx, {
     messages: [
-      { role: "custom", customType: "quality-gate", content: "old gate 1" },
+      { role: "custom", customType: "MetricEnforcer", content: "old gate 1" },
       { role: "assistant", content: "assistant output" },
-      { role: "custom", customType: "quality-gate", content: "old gate 2" },
+      { role: "custom", customType: "MetricEnforcer", content: "old gate 2" },
     ],
   });
 
@@ -498,16 +498,14 @@ test("metric-enforcer sends warning backpressure as quality-gate custom message"
 
     const sentCustomMessages = fakePi.getSentCustomMessages();
     assert.equal(sentCustomMessages.length, 1);
-    assert.equal(sentCustomMessages[0].message.customType, "quality-gate");
+    assert.equal(sentCustomMessages[0].message.customType, "MetricEnforcer");
     assert.equal(sentCustomMessages[0].options?.deliverAs, "steer");
     assert.equal(sentCustomMessages[0].options?.triggerTurn, true);
-    assert.ok(sentCustomMessages[0].message.content.includes("WARNING"));
-    assert.ok(sentCustomMessages[0].message.content.includes("Metric definitions:"));
-    assert.ok(
-      sentCustomMessages[0].message.content.includes("complexity: Cyclomatic complexity score of the touched file."),
-    );
-    assert.ok(sentCustomMessages[0].message.content.includes("Follow these instructions to handle the different violations:"));
-    assert.ok(sentCustomMessages[0].message.content.includes("consider refactoring"));
+    assert.ok(sentCustomMessages[0].message.content.includes("WARNING complexity 11 (max 10)"));
+    // The message carries only the changing violation data; definitions and static guidance now live
+    // once in the system-prompt policy, so they must not be repeated here.
+    assert.ok(!sentCustomMessages[0].message.content.includes("Metric definitions:"));
+    assert.ok(!sentCustomMessages[0].message.content.includes("Follow these instructions"));
     assert.equal(fakePi.getSentUserMessages().length, 0);
   } finally {
     process.chdir(previousCwd);
@@ -793,6 +791,62 @@ test("metric-enforcer happy path with disabled analyzer reports successful check
     assert.ok(messages.some((message) => message.includes("Agent changed files:")));
     assert.ok(messages.some((message) => message.includes("No analyzers enabled.")));
     assert.ok(messages.some((message) => message.includes("Metric checks passed.")));
+  } finally {
+    process.chdir(previousCwd);
+  }
+});
+
+test("metric-enforcer logs a config warning once per turn instead of on every retry", async () => {
+  const previousCwd = process.cwd();
+  const tempRepo = await mkdtemp(join(tmpdir(), "metric-enforcer-warning-dedup-test-"));
+
+  try {
+    process.chdir(tempRepo);
+    await execFileAsync("git", ["init"]);
+
+    await mkdir(".pi/metricEnforcer", { recursive: true });
+    await writeFile(
+      ".pi/metricEnforcer/metric-enforcer.config.json",
+      JSON.stringify(
+        {
+          logLevel: "warn", // invalid on purpose: the loader emits a warning and falls back to "warning"
+          analyzers: { ccsh: { enabled: false, command: "node", args: ["-e", ""] } },
+          backpressure: { errorOnly: false, maxBackpressureRetries: 3 },
+          thresholds: { global: {}, filePatterns: {} },
+          metricDefinitions: {},
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const notifications: Notification[] = [];
+    const ctx: TestContext = {
+      hasUI: true,
+      ui: {
+        notify(message, level) {
+          notifications.push({ message, level });
+        },
+      },
+    };
+
+    const countLogLevelWarnings = () =>
+      notifications.filter((entry) => entry.message.includes('Invalid "logLevel"')).length;
+
+    const fakePi = new FakePi();
+    metricEnforcer(fakePi as never);
+
+    // Two agent starts within the same user turn (as happens across backpressure retries) must not
+    // re-log the same config warning.
+    await fakePi.emit("agent_start", ctx);
+    await fakePi.emit("agent_start", ctx);
+    assert.equal(countLogLevelWarnings(), 1);
+
+    // A new user turn clears the suppression, so the warning surfaces again.
+    await fakePi.emit("input", ctx, { source: "user" });
+    await fakePi.emit("agent_start", ctx);
+    assert.equal(countLogLevelWarnings(), 2);
   } finally {
     process.chdir(previousCwd);
   }

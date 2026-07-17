@@ -1,5 +1,5 @@
-MetricEnforcer quality-gate policy (apply rules for the conversation after messages of type "quality-gate" until the next user message):
-- Messages with customType "quality-gate" come from an extension judging code quality.
+MetricEnforcer quality-gate policy (apply rules for the conversation after messages of type "MetricEnforcer" until the next user message):
+- Messages with customType "MetricEnforcer" come from an extension judging code quality.
 - Violations with severity "error" should be fixed immediately through refactoring the effected file.
 - Violations with severity "warning" mean that the metic is getting close to the allowed threshold and files should be refactored the next time they are changed
 - These refactorings are backpressure, not part of the explicit conversation with the user, except when stated to be so in a user message

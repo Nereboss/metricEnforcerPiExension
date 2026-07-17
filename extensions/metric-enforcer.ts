@@ -8,12 +8,13 @@ import { loadMetricEnforcerConfig } from "./metric-enforcer/config/loader.ts";
 import { logError, logInfo, logWarning } from "./metric-enforcer/logger.ts";
 import { runMetricOrchestration } from "./metric-enforcer/orchestrator.ts";
 import {
-   formatBackpressureMessage,
-    formatRetriesExhaustedWarning,
-     selectBackpressureViolations,
+  formatBackpressureMessage,
+  formatRetriesExhaustedWarning,
+  selectBackpressureViolations,
 } from "./metric-enforcer/backpressure.ts";
 import { formatMetricValue } from "./metric-enforcer/utils.ts";
 import {
+  formatMetricDefinitionsSection,
   getMessagesFromContextEvent,
   getSystemPromptFromBeforeAgentStartEvent,
   pruneOldQualityGateMessages,
@@ -35,6 +36,8 @@ let backpressureRetryCount = 0;
 let qualityGateMessagesSentInCurrentCycle = 0;
 let shouldResetTrackingOnNextAgentStart = true;
 let gitUnavailableNoticeShown = false;
+// Warning messages already emitted in the current user turn, so retries within the turn don't repeat them.
+let warningsEmittedThisTurn = new Set<string>();
 
 function parsePorcelainV1ZPaths(output: string): string[] {
   const entries = output.split("\0").filter((entry) => entry.length > 0);
@@ -153,16 +156,36 @@ async function loadQualityGatePolicyInstructions(ctx: ExtensionHandlerContext): 
     const policyMarkdown = (await readFile(policyFileUrl, "utf8")).trim();
 
     if (policyMarkdown.length === 0) {
-      logWarning(`Quality-gate policy file at ${policyFilePath} is empty.`, configuredLogLevel, ctx);
+      logWarningOncePerTurn(`Quality-gate policy file at ${policyFilePath} is empty.`, ctx);
       return undefined;
     }
 
     return policyMarkdown;
   } catch (error) {
     const errorDetails = error instanceof Error ? error.message : String(error);
-    logWarning(`Could not read quality-gate policy file at ${policyFilePath}: ${errorDetails}`, configuredLogLevel, ctx);
+    logWarningOncePerTurn(`Could not read quality-gate policy file at ${policyFilePath}: ${errorDetails}`, ctx);
     return undefined;
   }
+}
+
+/**
+ * Appends the configured metric definitions to the quality-gate policy so the model receives them
+ * once in the system prompt rather than on every backpressure message. If the config cannot be loaded
+ * we keep the policy as-is: missing definitions degrade the guidance but should not block the run.
+ */
+async function appendMetricDefinitionsToPolicy(policy: string, ctx: ExtensionHandlerContext): Promise<string> {
+  let metricDefinitions: Readonly<Record<string, string>>;
+
+  try {
+    metricDefinitions = (await loadMetricEnforcerConfig()).config.metricDefinitions;
+  } catch (error) {
+    const errorDetails = error instanceof Error ? error.message : String(error);
+    logWarningOncePerTurn(`Could not load metric definitions for the system prompt: ${errorDetails}`, ctx);
+    return policy;
+  }
+
+  const definitionsSection = formatMetricDefinitionsSection(metricDefinitions);
+  return definitionsSection === undefined ? policy : `${policy}\n\n${definitionsSection}`;
 }
 
 type ExtensionHandlerContext = Parameters<typeof logWarning>[2];
@@ -172,9 +195,21 @@ function applyConfiguredLogLevel(logLevel: "info" | "warning" | "error"): void {
   configuredLogLevel = logLevel;
 }
 
+/**
+ * Emits a warning only the first time it is seen in the current user turn. Config and analyzer warnings
+ * are recomputed on every backpressure retry within a turn, so without this they would be logged again
+ * on each retry. The set is cleared when the next user turn begins, so genuine issues resurface then.
+ */
+function logWarningOncePerTurn(message: string, ctx: ExtensionHandlerContext): void {
+  if (warningsEmittedThisTurn.has(message)) return;
+
+  warningsEmittedThisTurn.add(message);
+  logWarning(message, configuredLogLevel, ctx);
+}
+
 function logConfigWarnings(warnings: readonly string[], ctx: ExtensionHandlerContext): void {
   for (const warning of warnings) {
-    logWarning(warning, configuredLogLevel, ctx);
+    logWarningOncePerTurn(warning, ctx);
   }
 }
 
@@ -272,7 +307,7 @@ function handleBackpressureResult(
     pi.sendMessage(
       {
         customType: QUALITY_GATE_CUSTOM_TYPE,
-        content: formatBackpressureMessage(backpressureViolations, loadedConfig.config.metricDefinitions),
+        content: formatBackpressureMessage(backpressureViolations),
         display: true,
       },
       { triggerTurn: true, deliverAs: "steer" },
@@ -291,6 +326,7 @@ export default function metricEnforcer(pi: ExtensionAPI) {
   isMetricEnforcerActive = true;
   configuredLogLevel = "warning";
   gitUnavailableNoticeShown = false;
+  warningsEmittedThisTurn = new Set<string>();
 
   // Surface the "not a git repository" error once when the extension loads so
   // the user knows it cannot work here, before any agent run is attempted.
@@ -338,8 +374,10 @@ export default function metricEnforcer(pi: ExtensionAPI) {
 
     if (currentSystemPrompt === undefined || qualityGatePolicyInstructions === undefined) return undefined;
 
+    const qualityGatePolicy = await appendMetricDefinitionsToPolicy(qualityGatePolicyInstructions, ctx);
+
     return {
-      systemPrompt: `${currentSystemPrompt}\n\n${qualityGatePolicyInstructions}`,
+      systemPrompt: `${currentSystemPrompt}\n\n${qualityGatePolicy}`,
     };
   });
 
@@ -357,6 +395,8 @@ export default function metricEnforcer(pi: ExtensionAPI) {
   pi.on("input", async (event) => {
     if (event.source !== "extension") {
       shouldResetTrackingOnNextAgentStart = true;
+      // A new user turn: let warnings surface again instead of staying suppressed from the previous turn.
+      warningsEmittedThisTurn.clear();
     }
   });
 
@@ -404,7 +444,7 @@ export default function metricEnforcer(pi: ExtensionAPI) {
       );
 
       for (const analyzerWarning of orchestrationResult.analyzerWarnings) {
-        logWarning(analyzerWarning, configuredLogLevel, ctx);
+        logWarningOncePerTurn(analyzerWarning, ctx);
       }
 
       logInfo(formatViolationsSummary(orchestrationResult.violations), configuredLogLevel, ctx);

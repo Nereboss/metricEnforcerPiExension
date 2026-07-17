@@ -50,7 +50,7 @@ If the file does not exist, MetricEnforcer creates it at startup from the bundle
 - `backpressure.maxBackpressureRetries`: max retry count
 - `thresholds.global`: default metric thresholds
 - `thresholds.filePatterns`: per-pattern threshold overrides (for example `"*.ts"`)
-- `metricDefinitions`: human-readable metric explanations included in quality-gate messages
+- `metricDefinitions`: human-readable metric explanations added once to the system-prompt policy so the agent knows what each metric means
 
 ### Threshold semantics
 
