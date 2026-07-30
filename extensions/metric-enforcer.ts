@@ -410,10 +410,15 @@ export default function metricEnforcer(pi: ExtensionAPI) {
     name: "waive_metric_file",
     label: "Waive Metric File",
     description:
-      "Temporarily exclude one already-touched file with a genuinely pre-existing, out-of-scope metric violation. The waiver ends if the file changes.",
+      "Temporarily exclude one already-touched file from MetricEnforcer checks for the active quality-gate cycle. The waiver ends if the file changes.",
     parameters: Type.Object({
       filePath: Type.String({ description: "Project-relative path of the tracked file to waive." }),
-      reason: Type.Optional(Type.String({ description: "Why the violation is pre-existing and outside the current task." })),
+      reason: Type.Optional(
+        Type.String({
+          description:
+            "Why the violation is pre-existing and outside the current task, and what you reviewed or fixed around your own edits first.",
+        }),
+      ),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const normalizedFilePath = normalizeProjectRelativeFilePath(params.filePath, process.cwd());

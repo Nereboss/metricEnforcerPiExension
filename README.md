@@ -43,7 +43,7 @@ MetricEnforcer is intended to improve the codebase incrementally: manageable vio
 ```text
 waive_metric_file({
   filePath: "src/legacy.ts",
-  reason: "Reducing existing complexity from 500 to below 100 is disproportionate to this small bug fix."
+  reason: "Reviewed and simplified the edited block; reducing the remaining complexity from 500 to below 100 is disproportionate to this small bug fix."
 })
 ```
 
