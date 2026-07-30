@@ -10,6 +10,9 @@
   "pi": {
     "extensions": ["./extensions/metric-enforcer.ts"]
   },
+  "dependencies": {
+    "typebox": "^1.1.38"
+  },
   "peerDependencies": {
     "@mariozechner/pi-coding-agent": "*"
   }

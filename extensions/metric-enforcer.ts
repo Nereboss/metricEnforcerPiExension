@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { Type } from "typebox";
 import type { Violation } from "./metric-enforcer/types.ts";
 import { loadMetricEnforcerConfig } from "./metric-enforcer/config/loader.ts";
 import { logError, logInfo, logWarning } from "./metric-enforcer/logger.ts";
@@ -17,6 +18,12 @@ import {
   selectBackpressureViolations,
 } from "./metric-enforcer/backpressure.ts";
 import { formatMetricValue } from "./metric-enforcer/utils.ts";
+import {
+  getEligibleTrackedFiles,
+  normalizeProjectRelativeFilePath,
+  revokeChangedWaivers,
+  type FileWaivers,
+} from "./metric-enforcer/waiver.ts";
 import {
   formatMetricDefinitionsSection,
   getMessagesFromContextEvent,
@@ -36,6 +43,7 @@ const GIT_UNAVAILABLE_MESSAGE =
 
 let turnStartSnapshot = createEmptySnapshot();
 let cumulativeAgentTouchedFiles = new Set<string>();
+let activeFileWaivers: FileWaivers = new Map<string, string>();
 let isMetricEnforcerActive = true;
 let configuredLogLevel: "info" | "warning" | "error" = "warning";
 let backpressureRetryCount = 0;
@@ -141,14 +149,6 @@ function createEmptySnapshot(): Map<string, string> {
   return new Map<string, string>();
 }
 
-function filterExistingFiles(files: readonly string[], snapshot: Map<string, string>): string[] {
-  return files.filter((filePath) => snapshot.has(filePath));
-}
-
-function toSortedFilePathArray(filePaths: ReadonlySet<string>): string[] {
-  return [...filePaths].sort((a, b) => a.localeCompare(b));
-}
-
 
 function getQualityGatePolicyFileUrl(): URL {
   return new URL(`../${QUALITY_GATE_POLICY_FILE_NAME}`, import.meta.url);
@@ -231,6 +231,7 @@ function resetTrackingStateForNewCycle(): void {
   backpressureRetryCount = 0;
   qualityGateMessagesSentInCurrentCycle = 0;
   cumulativeAgentTouchedFiles = new Set<string>();
+  activeFileWaivers = new Map<string, string>();
   shouldResetTrackingOnNextAgentStart = false;
 }
 
@@ -239,6 +240,7 @@ function clearTrackingAndMarkNextAgentStartAsNewCycle(): void {
   qualityGateMessagesSentInCurrentCycle = 0;
   turnStartSnapshot = createEmptySnapshot();
   cumulativeAgentTouchedFiles = new Set<string>();
+  activeFileWaivers = new Map<string, string>();
   shouldResetTrackingOnNextAgentStart = true;
 }
 
@@ -248,8 +250,16 @@ function addTouchedFilesToTracking(files: readonly string[]): void {
   }
 }
 
-function getCurrentlyTrackedExistingFiles(snapshot: Map<string, string>): string[] {
-  return filterExistingFiles(toSortedFilePathArray(cumulativeAgentTouchedFiles), snapshot);
+function getCurrentlyEligibleTrackedFiles(snapshot: Map<string, string>): string[] {
+  return getEligibleTrackedFiles(cumulativeAgentTouchedFiles, snapshot, activeFileWaivers);
+}
+
+function createWaiverToolResult(message: string, isError = false) {
+  return {
+    content: [{ type: "text" as const, text: message }],
+    details: {},
+    isError,
+  };
 }
 
 function createAnalyzerExecutionContext() {
@@ -389,6 +399,61 @@ export default function metricEnforcer(pi: ExtensionAPI) {
     await ensureGitRepositoryAvailable(ctx);
   });
 
+  pi.registerTool({
+    name: "waive_metric_file",
+    label: "Waive Metric File",
+    description:
+      "Temporarily exclude one already-touched file with a genuinely pre-existing, out-of-scope metric violation. The waiver ends if the file changes.",
+    parameters: Type.Object({
+      filePath: Type.String({ description: "Project-relative path of the tracked file to waive." }),
+      reason: Type.Optional(Type.String({ description: "Why the violation is pre-existing and outside the current task." })),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const normalizedFilePath = normalizeProjectRelativeFilePath(params.filePath, process.cwd());
+
+      if (normalizedFilePath === undefined) {
+        return createWaiverToolResult(
+          `Cannot waive ${params.filePath}: file paths must be project-relative and remain inside the project.`,
+          true,
+        );
+      }
+
+      if (!cumulativeAgentTouchedFiles.has(normalizedFilePath)) {
+        return createWaiverToolResult(
+          `Cannot waive ${normalizedFilePath}: it was not changed by the agent in the active quality-gate cycle.`,
+          true,
+        );
+      }
+
+      try {
+        const snapshot = await getWorkingTreeSnapshot();
+        const fileHash = snapshot.get(normalizedFilePath);
+
+        if (fileHash === undefined || fileHash === MISSING_FILE_HASH) {
+          return createWaiverToolResult(
+            `Cannot waive ${normalizedFilePath}: the file is missing or deleted from the working tree.`,
+            true,
+          );
+        }
+
+        activeFileWaivers.set(normalizedFilePath, fileHash);
+        logInfo(
+          `MetricEnforcer temporarily waived ${normalizedFilePath} for the current quality-gate cycle.`,
+          configuredLogLevel,
+          ctx,
+        );
+        return createWaiverToolResult(
+          `MetricEnforcer will exclude ${normalizedFilePath} for the current quality-gate cycle. It will be checked again automatically if its contents change.`,
+        );
+      } catch (error) {
+        return createWaiverToolResult(
+          `Cannot waive ${normalizedFilePath}: could not capture its working-tree hash: ${error instanceof Error ? error.message : String(error)}`,
+          true,
+        );
+      }
+    },
+  });
+
   pi.registerCommand("activateMetricEnforcer", {
     description: "Activate metric enforcement for upcoming agent runs",
     handler: async (_args, ctx) => {
@@ -483,9 +548,37 @@ export default function metricEnforcer(pi: ExtensionAPI) {
 
       logInfo(formatMessageForTouchedFiles(changedByAgentThisTurn), configuredLogLevel, ctx);
 
-      const existingTouchedFiles = getCurrentlyTrackedExistingFiles(endSnapshot);
+      const revokedWaivers = revokeChangedWaivers(activeFileWaivers, endSnapshot);
+      for (const filePath of revokedWaivers) {
+        logInfo(
+          `MetricEnforcer resumed checking ${filePath} because the file changed after its waiver.`,
+          configuredLogLevel,
+          ctx,
+        );
+      }
+
+      const eligibleTouchedFiles = getCurrentlyEligibleTrackedFiles(endSnapshot);
+      const waivedFileCount = [...activeFileWaivers.keys()].filter((filePath) => endSnapshot.has(filePath)).length;
+      if (eligibleTouchedFiles.length === 0 && waivedFileCount > 0) {
+        logInfo(
+          `MetricEnforcer skipped ${waivedFileCount} waived file${waivedFileCount === 1 ? "" : "s"} for this quality-gate cycle.`,
+          configuredLogLevel,
+          ctx,
+        );
+        clearTrackingAndMarkNextAgentStartAsNewCycle();
+        return;
+      }
+
+      if (waivedFileCount > 0) {
+        logInfo(
+          `MetricEnforcer skipped ${waivedFileCount} waived file${waivedFileCount === 1 ? "" : "s"} for this quality-gate cycle.`,
+          configuredLogLevel,
+          ctx,
+        );
+      }
+
       const orchestrationResult = await runMetricOrchestrationWithRetries(
-        existingTouchedFiles,
+        eligibleTouchedFiles,
         loadedConfig.config,
         ctx,
       );

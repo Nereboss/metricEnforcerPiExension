@@ -3,11 +3,24 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Type, type Static, type TSchema } from "typebox";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import metricEnforcer from "../extensions/metric-enforcer.ts";
 
 const execFileAsync = promisify(execFile);
+
+interface RegisteredTool<TParameters extends TSchema = TSchema> {
+  name: string;
+  parameters: TParameters;
+  execute(
+    toolCallId: string,
+    params: Static<TParameters>,
+    signal: AbortSignal | undefined,
+    onUpdate: undefined,
+    ctx: TestContext,
+  ): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }>;
+}
 
 interface SentCustomMessage {
   message: {
@@ -24,6 +37,7 @@ interface SentCustomMessage {
 class FakePi {
   private handlers = new Map<string, Array<(event: unknown, ctx: TestContext) => Promise<unknown> | unknown>>();
   private commands = new Map<string, (args: string, ctx: TestContext) => Promise<void>>();
+  private tools = new Map<string, RegisteredTool>();
   private userMessages: string[] = [];
   private customMessages: SentCustomMessage[] = [];
 
@@ -35,6 +49,10 @@ class FakePi {
 
   registerCommand(_name: string, options: { handler: (args: string, ctx: TestContext) => Promise<void> }): void {
     this.commands.set(_name, options.handler);
+  }
+
+  registerTool(tool: RegisteredTool): void {
+    this.tools.set(tool.name, tool);
   }
 
   async emit(eventName: string, ctx: TestContext, event: Record<string, unknown> = {}): Promise<unknown[]> {
@@ -56,6 +74,18 @@ class FakePi {
     }
 
     await handler(args, ctx);
+  }
+
+  async invokeTool(name: string, params: Record<string, unknown>, ctx: TestContext) {
+    const tool = this.tools.get(name);
+
+    if (tool === undefined) throw new Error(`Missing registered tool: ${name}`);
+
+    return tool.execute("test-tool-call", params as never, undefined, undefined, ctx);
+  }
+
+  hasRegisteredTool(name: string): boolean {
+    return this.tools.has(name);
   }
 
   sendUserMessage(content: string): void {
@@ -103,6 +133,13 @@ test("metric-enforcer registers expected lifecycle handlers", () => {
     "input",
     "session_start",
   ]);
+});
+
+test("metric-enforcer registers the temporary file-waiver tool", () => {
+  const fakePi = new FakePi();
+  metricEnforcer(fakePi as never);
+
+  assert.equal(fakePi.hasRegisteredTool("waive_metric_file"), true);
 });
 
 test("metric-enforcer shows a single error in a non-git directory and then stays silent", async () => {
@@ -176,6 +213,11 @@ test("metric-enforcer appends quality-gate policy from the extension repository"
     assert.ok(
       (beforeAgentStartResult as { systemPrompt: string }).systemPrompt.includes(
         "come from an extension judging code quality.",
+      ),
+    );
+    assert.ok(
+      (beforeAgentStartResult as { systemPrompt: string }).systemPrompt.includes(
+        "Never use `waive_metric_file` to evade a violation introduced or materially affected by your changes.",
       ),
     );
   } finally {
@@ -507,6 +549,174 @@ test("metric-enforcer sends warning backpressure as quality-gate custom message"
     assert.ok(!sentCustomMessages[0].message.content.includes("Metric definitions:"));
     assert.ok(!sentCustomMessages[0].message.content.includes("Follow these instructions"));
     assert.equal(fakePi.getSentUserMessages().length, 0);
+  } finally {
+    process.chdir(previousCwd);
+  }
+});
+
+test("metric-enforcer waives only a tracked existing project-relative file", async () => {
+  const previousCwd = process.cwd();
+  const tempRepo = await mkdtemp(join(tmpdir(), "metric-enforcer-waiver-tool-test-"));
+
+  try {
+    process.chdir(tempRepo);
+    await execFileAsync("git", ["init"]);
+    await writeFile("sample.ts", "export const x = 1;\n", "utf8");
+    await writeFlakyAnalyzerConfig(1);
+
+    const ctx: TestContext = { hasUI: true, ui: { notify() {} } };
+    const fakePi = new FakePi();
+    metricEnforcer(fakePi as never);
+
+    const untrackedResult = await fakePi.invokeTool("waive_metric_file", { filePath: "other.ts" }, ctx);
+    assert.equal(untrackedResult.isError, true);
+    assert.match(untrackedResult.content[0].text, /not changed by the agent/);
+
+    await fakePi.emit("agent_start", ctx);
+    await writeFile("sample.ts", "export const x = 2;\n", "utf8");
+    await fakePi.emit("agent_end", ctx);
+
+    const absoluteResult = await fakePi.invokeTool("waive_metric_file", { filePath: join(tempRepo, "sample.ts") }, ctx);
+    const traversalResult = await fakePi.invokeTool("waive_metric_file", { filePath: "../outside.ts" }, ctx);
+    const missingResult = await fakePi.invokeTool("waive_metric_file", { filePath: "missing.ts" }, ctx);
+    const acceptedResult = await fakePi.invokeTool("waive_metric_file", { filePath: "sample.ts", reason: "legacy" }, ctx);
+
+    assert.equal(absoluteResult.isError, true);
+    assert.equal(traversalResult.isError, true);
+    assert.equal(missingResult.isError, true);
+    assert.equal(acceptedResult.isError, false);
+    assert.match(acceptedResult.content[0].text, /checked again automatically if its contents change/);
+  } finally {
+    process.chdir(previousCwd);
+  }
+});
+
+test("metric-enforcer skips an all-waived cycle without analysis or a successful-check notification", async () => {
+  const previousCwd = process.cwd();
+  const tempRepo = await mkdtemp(join(tmpdir(), "metric-enforcer-all-waived-test-"));
+
+  try {
+    process.chdir(tempRepo);
+    await execFileAsync("git", ["init"]);
+    await writeFile("sample.ts", "export const x = 1;\n", "utf8");
+    await writeFlakyAnalyzerConfig(1);
+
+    const notifications: Notification[] = [];
+    const ctx: TestContext = { hasUI: true, ui: { notify(message, level) { notifications.push({ message, level }); } } };
+    const fakePi = new FakePi();
+    metricEnforcer(fakePi as never);
+
+    await fakePi.emit("agent_start", ctx);
+    await writeFile("sample.ts", "export const x = 2;\n", "utf8");
+    await fakePi.emit("agent_end", ctx);
+    assert.equal(await countAnalyzerAttempts(), 1);
+    assert.equal(fakePi.getSentCustomMessages().length, 1);
+
+    await fakePi.invokeTool("waive_metric_file", { filePath: "sample.ts" }, ctx);
+    notifications.length = 0;
+    await fakePi.emit("agent_start", ctx);
+    await fakePi.emit("agent_end", ctx);
+
+    assert.equal(await countAnalyzerAttempts(), 1);
+    assert.equal(fakePi.getSentCustomMessages().length, 1);
+    assert.equal(notifications.some((entry) => entry.message.includes("Metric checks passed.")), false);
+    assert.ok(notifications.some((entry) => entry.message.includes("skipped 1 waived file")));
+  } finally {
+    process.chdir(previousCwd);
+  }
+});
+
+test("metric-enforcer keeps backpressure for a non-waived file", async () => {
+  const previousCwd = process.cwd();
+  const tempRepo = await mkdtemp(join(tmpdir(), "metric-enforcer-partial-waiver-test-"));
+
+  try {
+    process.chdir(tempRepo);
+    await execFileAsync("git", ["init"]);
+    await writeFile("sample.ts", "export const x = 1;\n", "utf8");
+    await writeFile("other.ts", "export const y = 1;\n", "utf8");
+    await writeFlakyAnalyzerConfig(1);
+
+    const ctx: TestContext = { hasUI: true, ui: { notify() {} } };
+    const fakePi = new FakePi();
+    metricEnforcer(fakePi as never);
+
+    await fakePi.emit("agent_start", ctx);
+    await writeFile("sample.ts", "export const x = 2;\n", "utf8");
+    await writeFile("other.ts", "export const y = 2;\n", "utf8");
+    await fakePi.emit("agent_end", ctx);
+    await fakePi.invokeTool("waive_metric_file", { filePath: "other.ts" }, ctx);
+
+    await fakePi.emit("agent_start", ctx);
+    await fakePi.emit("agent_end", ctx);
+
+    assert.equal(fakePi.getSentCustomMessages().length, 2);
+  } finally {
+    process.chdir(previousCwd);
+  }
+});
+
+test("metric-enforcer clears waivers at user-cycle and deactivation boundaries", async () => {
+  const previousCwd = process.cwd();
+  const tempRepo = await mkdtemp(join(tmpdir(), "metric-enforcer-waiver-reset-test-"));
+
+  try {
+    process.chdir(tempRepo);
+    await execFileAsync("git", ["init"]);
+    await writeFile("sample.ts", "export const x = 1;\n", "utf8");
+    await writeFlakyAnalyzerConfig(1);
+
+    const ctx: TestContext = { hasUI: true, ui: { notify() {} } };
+    const fakePi = new FakePi();
+    metricEnforcer(fakePi as never);
+
+    await fakePi.emit("agent_start", ctx);
+    await writeFile("sample.ts", "export const x = 2;\n", "utf8");
+    await fakePi.emit("agent_end", ctx);
+    await fakePi.invokeTool("waive_metric_file", { filePath: "sample.ts" }, ctx);
+    await fakePi.emit("input", ctx, { source: "interactive" });
+    await fakePi.emit("agent_start", ctx);
+    const afterUserReset = await fakePi.invokeTool("waive_metric_file", { filePath: "sample.ts" }, ctx);
+    assert.equal(afterUserReset.isError, true);
+
+    await writeFile("sample.ts", "export const x = 3;\n", "utf8");
+    await fakePi.emit("agent_end", ctx);
+    await fakePi.invokeTool("waive_metric_file", { filePath: "sample.ts" }, ctx);
+    await fakePi.invokeCommand("deactivateMetricEnforcer", "", ctx);
+    await fakePi.invokeCommand("activateMetricEnforcer", "", ctx);
+    const afterDeactivationReset = await fakePi.invokeTool("waive_metric_file", { filePath: "sample.ts" }, ctx);
+    assert.equal(afterDeactivationReset.isError, true);
+  } finally {
+    process.chdir(previousCwd);
+  }
+});
+
+test("metric-enforcer revokes a waiver and resumes backpressure when the file changes", async () => {
+  const previousCwd = process.cwd();
+  const tempRepo = await mkdtemp(join(tmpdir(), "metric-enforcer-waiver-revocation-test-"));
+
+  try {
+    process.chdir(tempRepo);
+    await execFileAsync("git", ["init"]);
+    await writeFile("sample.ts", "export const x = 1;\n", "utf8");
+    await writeFlakyAnalyzerConfig(1);
+
+    const notifications: Notification[] = [];
+    const ctx: TestContext = { hasUI: true, ui: { notify(message, level) { notifications.push({ message, level }); } } };
+    const fakePi = new FakePi();
+    metricEnforcer(fakePi as never);
+
+    await fakePi.emit("agent_start", ctx);
+    await writeFile("sample.ts", "export const x = 2;\n", "utf8");
+    await fakePi.emit("agent_end", ctx);
+    await fakePi.invokeTool("waive_metric_file", { filePath: "sample.ts" }, ctx);
+
+    await fakePi.emit("agent_start", ctx);
+    await writeFile("sample.ts", "export const x = 3;\n", "utf8");
+    await fakePi.emit("agent_end", ctx);
+
+    assert.equal(fakePi.getSentCustomMessages().length, 2);
+    assert.ok(notifications.some((entry) => entry.message.includes("resumed checking sample.ts")));
   } finally {
     process.chdir(previousCwd);
   }

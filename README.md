@@ -28,12 +28,26 @@ MetricEnforcer adds an automated quality gate to your PI workflow. It tracks fil
 - **Global + file-pattern-specific thresholds**
 - **Warning/error severity model** per metric
 - **Backpressure loop** to steer retries when violations occur
+- **Temporary per-file waivers** for disproportionate legacy refactors, automatically revoked when the file changes
 - **Analysis retries**: a quality gate re-runs its analyzers up to three times if any fail
 - **Extendable analyzer architecture** for adding other code analyzer tools
 
 ### Activate/deactivate at any point
 - `/activateMetricEnforcer` (on by default)
 - `/deactivateMetricEnforcer`
+
+### Temporarily waive a legacy-file violation
+
+MetricEnforcer is intended to improve the codebase incrementally: manageable violations in touched code should still be refactored, including pre-existing ones that are only slightly over their limit. For an exceptional legacy violation whose remediation would be disproportionate to the current task—such as reducing a complexity-500 file below a limit of 100 after a small edit—the agent may call `waive_metric_file` after MetricEnforcer has tracked the file:
+
+```text
+waive_metric_file({
+  filePath: "src/legacy.ts",
+  reason: "Reducing existing complexity from 500 to below 100 is disproportionate to this small bug fix."
+})
+```
+
+The tool only accepts normalized project-relative paths for files already changed by the agent in the active cycle. It rejects absolute paths, traversal outside the project, untracked files, and missing/deleted files. A waiver is temporary: it excludes only that file for the current cycle and is revoked as soon as the file changes. It must not be used to evade violations introduced or materially affected by the agent.
 
 ## What settings can be customized
 
