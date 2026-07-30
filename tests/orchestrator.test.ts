@@ -223,7 +223,7 @@ test("collectMetricDefinitions returns definitions from the enabled ccsh analyze
 
   assert.equal(warnings.length, 0);
   assert.ok(definitions.complexity.length > 0);
-  assert.ok(definitions.loc.length > 0);
+  assert.ok(definitions.logic_complexity.length > 0);
   assert.ok(definitions.rloc.length > 0);
 });
 

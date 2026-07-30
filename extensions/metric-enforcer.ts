@@ -6,7 +6,11 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import type { Violation } from "./metric-enforcer/types.ts";
 import { loadMetricEnforcerConfig } from "./metric-enforcer/config/loader.ts";
 import { logError, logInfo, logWarning } from "./metric-enforcer/logger.ts";
-import { collectMetricDefinitions, runMetricOrchestration } from "./metric-enforcer/orchestrator.ts";
+import {
+  collectMetricDefinitions,
+  runMetricOrchestration,
+  type OrchestrationResult,
+} from "./metric-enforcer/orchestrator.ts";
 import {
   formatBackpressureMessage,
   formatRetriesExhaustedWarning,
@@ -24,6 +28,8 @@ import {
 
 const execFileAsync = promisify(execFile);
 const MISSING_FILE_HASH = "__MISSING__";
+// in case an analyzer fails, try it a max of this many times
+const MAX_ANALYSIS_ATTEMPTS = 3;
 const GIT_UNAVAILABLE_MESSAGE =
   "The current directory is not a git repository. " +
   "Metric enforcer relies on git to detect changed files, it has been deactivated.";
@@ -295,6 +301,47 @@ async function ensureGitRepositoryAvailable(ctx: ExtensionHandlerContext): Promi
   return false;
 }
 
+/**
+ * Runs the enabled analyzers, retrying the whole orchestration for as long as it keeps failing.
+ * Only losing every attempt is reported, so a transient analyzer crash stays a non-event instead of
+ * silently disabling enforcement for the turn. Retries are immediate: the failures seen so far are
+ * races that a second process start already avoids, and waiting would stall the agent.
+ *
+ * Returns undefined when no attempt produced a result — the caller must not treat that as a passed
+ * gate.
+ */
+async function runMetricOrchestrationWithRetries(
+  touchedFiles: readonly string[],
+  config: LoadedMetricConfig["config"],
+  ctx: ExtensionHandlerContext,
+): Promise<OrchestrationResult | undefined> {
+  for (let attempt = 1; attempt <= MAX_ANALYSIS_ATTEMPTS; attempt += 1) {
+    try {
+      return await runMetricOrchestration(touchedFiles, config, createAnalyzerExecutionContext());
+    } catch (error) {
+      const errorDetails = error instanceof Error ? error.message : String(error);
+
+      if (attempt < MAX_ANALYSIS_ATTEMPTS) {
+        logInfo(
+          `Metric analysis attempt ${attempt} of ${MAX_ANALYSIS_ATTEMPTS} failed, retrying: ${errorDetails}`,
+          configuredLogLevel,
+          ctx,
+        );
+        continue;
+      }
+
+      logError(
+        `Metric analysis could not be run: all ${MAX_ANALYSIS_ATTEMPTS} attempts failed, ` +
+          `so no quality gate was applied to this turn. Last error: ${errorDetails}`,
+        configuredLogLevel,
+        ctx,
+      );
+    }
+  }
+
+  return undefined;
+}
+
 function handleBackpressureResult(
   pi: ExtensionAPI,
   loadedConfig: LoadedMetricConfig,
@@ -437,11 +484,13 @@ export default function metricEnforcer(pi: ExtensionAPI) {
       logInfo(formatMessageForTouchedFiles(changedByAgentThisTurn), configuredLogLevel, ctx);
 
       const existingTouchedFiles = getCurrentlyTrackedExistingFiles(endSnapshot);
-      const orchestrationResult = await runMetricOrchestration(
+      const orchestrationResult = await runMetricOrchestrationWithRetries(
         existingTouchedFiles,
         loadedConfig.config,
-        createAnalyzerExecutionContext(),
+        ctx,
       );
+
+      if (orchestrationResult === undefined) return;
 
       logInfo(
         orchestrationResult.enabledAnalyzers.length === 0

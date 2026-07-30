@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
@@ -791,6 +791,140 @@ test("metric-enforcer happy path with disabled analyzer reports successful check
     assert.ok(messages.some((message) => message.includes("Agent changed files:")));
     assert.ok(messages.some((message) => message.includes("No analyzers enabled.")));
     assert.ok(messages.some((message) => message.includes("Metric checks passed.")));
+  } finally {
+    process.chdir(previousCwd);
+  }
+});
+
+/**
+ * Fake analyzer that records every invocation in `attempts.log` and fails until it has been called
+ * `succeedFromAttempt` times, so tests can drive the analysis retry loop.
+ */
+function createFlakyAnalyzerArgs(succeedFromAttempt: number): string[] {
+  return [
+    "-e",
+    "const fs=require('fs');" +
+      "fs.appendFileSync('attempts.log','x');" +
+      "const attempts=fs.readFileSync('attempts.log','utf8').length;" +
+      `if(attempts<${succeedFromAttempt})process.exit(1);` +
+      "const arg=process.argv.find((value)=>value.startsWith('--output-file='));" +
+      "const out=arg.split('=')[1];" +
+      "fs.mkdirSync('.pi/metricEnforcer',{recursive:true});" +
+      "fs.writeFileSync(out,JSON.stringify({data:{nodes:[{name:'root',type:'Folder',children:[{name:'sample.ts',type:'File',attributes:{complexity:99},children:[]}]}]}}));",
+    "--",
+    "--output-file=.pi/metricEnforcer/cachedAnalysis.cc.json",
+  ];
+}
+
+async function writeFlakyAnalyzerConfig(succeedFromAttempt: number): Promise<void> {
+  await mkdir(".pi/metricEnforcer", { recursive: true });
+  await writeFile(
+    ".pi/metricEnforcer/metric-enforcer.config.json",
+    JSON.stringify(
+      {
+        logLevel: "info",
+        analyzers: {
+          ccsh: {
+            enabled: true,
+            command: "node",
+            args: createFlakyAnalyzerArgs(succeedFromAttempt),
+          },
+        },
+        backpressure: {
+          errorOnly: false,
+          maxBackpressureRetries: 3,
+        },
+        thresholds: {
+          global: {
+            complexity: { warning: 10, error: 15 },
+          },
+          filePatterns: {},
+        },
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
+}
+
+async function countAnalyzerAttempts(): Promise<number> {
+  return (await readFile("attempts.log", "utf8")).length;
+}
+
+test("metric-enforcer retries a failing analysis and keeps the gate silent once it succeeds", async () => {
+  const previousCwd = process.cwd();
+  const tempRepo = await mkdtemp(join(tmpdir(), "metric-enforcer-analysis-retry-test-"));
+
+  try {
+    process.chdir(tempRepo);
+    await execFileAsync("git", ["init"]);
+    await writeFile("sample.ts", "export const x = 1;\n", "utf8");
+    await writeFlakyAnalyzerConfig(3);
+
+    const notifications: Notification[] = [];
+    const ctx: TestContext = {
+      hasUI: true,
+      ui: {
+        notify(message, level) {
+          notifications.push({ message, level });
+        },
+      },
+    };
+
+    const fakePi = new FakePi();
+    metricEnforcer(fakePi as never);
+
+    await fakePi.emit("agent_start", ctx);
+    await writeFile("sample.ts", "export const x = 2;\n", "utf8");
+    await fakePi.emit("agent_end", ctx);
+
+    assert.equal(await countAnalyzerAttempts(), 3);
+    // The third attempt produced violations, so the gate steers the agent as usual.
+    assert.equal(fakePi.getSentCustomMessages().length, 1);
+    assert.equal(notifications.some((entry) => entry.message.includes("could not be run")), false);
+    assert.equal(notifications.filter((entry) => entry.message.includes("failed, retrying")).length, 2);
+  } finally {
+    process.chdir(previousCwd);
+  }
+});
+
+test("metric-enforcer reports that the analysis could not be run after three failed attempts", async () => {
+  const previousCwd = process.cwd();
+  const tempRepo = await mkdtemp(join(tmpdir(), "metric-enforcer-analysis-failure-test-"));
+
+  try {
+    process.chdir(tempRepo);
+    await execFileAsync("git", ["init"]);
+    await writeFile("sample.ts", "export const x = 1;\n", "utf8");
+    await writeFlakyAnalyzerConfig(Number.MAX_SAFE_INTEGER);
+
+    const notifications: Notification[] = [];
+    const ctx: TestContext = {
+      hasUI: true,
+      ui: {
+        notify(message, level) {
+          notifications.push({ message, level });
+        },
+      },
+    };
+
+    const fakePi = new FakePi();
+    metricEnforcer(fakePi as never);
+
+    await fakePi.emit("agent_start", ctx);
+    await writeFile("sample.ts", "export const x = 2;\n", "utf8");
+    await fakePi.emit("agent_end", ctx);
+
+    assert.equal(await countAnalyzerAttempts(), 3);
+
+    const failureNotifications = notifications.filter((entry) => entry.message.includes("could not be run"));
+    assert.equal(failureNotifications.length, 1);
+    assert.equal(failureNotifications[0].level, "error");
+    assert.ok(failureNotifications[0].message.includes("no quality gate was applied to this turn"));
+    // A failed analysis must never look like a passed gate.
+    assert.equal(notifications.some((entry) => entry.message.includes("Metric checks passed.")), false);
+    assert.equal(fakePi.getSentCustomMessages().length, 0);
   } finally {
     process.chdir(previousCwd);
   }

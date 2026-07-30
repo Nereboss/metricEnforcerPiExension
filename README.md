@@ -28,6 +28,7 @@ MetricEnforcer adds an automated quality gate to your PI workflow. It tracks fil
 - **Global + file-pattern-specific thresholds**
 - **Warning/error severity model** per metric
 - **Backpressure loop** to steer retries when violations occur
+- **Analysis retries**: a quality gate re-runs its analyzers up to three times if any fail
 - **Extendable analyzer architecture** for adding other code analyzer tools
 
 ### Activate/deactivate at any point
