@@ -116,6 +116,7 @@ interface Notification {
 
 interface TestContext {
   hasUI: boolean;
+  signal?: AbortSignal;
   ui: {
     notify(message: string, level: string): void;
   };
@@ -217,7 +218,7 @@ test("metric-enforcer appends quality-gate policy from the extension repository"
     );
     assert.ok(
       (beforeAgentStartResult as { systemPrompt: string }).systemPrompt.includes(
-        "Never use `waive_metric_file` to evade a violation introduced or materially affected by your changes.",
+        "Do not waive violations introduced or materially affected by your changes.",
       ),
     );
   } finally {
@@ -468,6 +469,61 @@ test("metric-enforcer falls back to warning logLevel when config logLevel is inv
       ),
     );
     assert.equal(notifications.some((entry) => entry.message.includes("Agent changed files:")), false);
+  } finally {
+    process.chdir(previousCwd);
+  }
+});
+
+test("metric-enforcer skips backpressure when the agent run is aborted", async () => {
+  const previousCwd = process.cwd();
+  const tempRepo = await mkdtemp(join(tmpdir(), "metric-enforcer-aborted-run-test-"));
+
+  try {
+    process.chdir(tempRepo);
+    await execFileAsync("git", ["init"]);
+    await writeFile("sample.ts", "export const x = 1;\n", "utf8");
+    await writeFlakyAnalyzerConfig(1);
+
+    const abortController = new AbortController();
+    const ctx: TestContext = { hasUI: true, signal: abortController.signal, ui: { notify() {} } };
+    const fakePi = new FakePi();
+    metricEnforcer(fakePi as never);
+
+    await fakePi.emit("agent_start", ctx);
+    await writeFile("sample.ts", "export const x = 2;\n", "utf8");
+    abortController.abort();
+    await fakePi.emit("agent_end", ctx);
+
+    assert.equal(fakePi.getSentCustomMessages().length, 0);
+    assert.equal(await countAnalyzerAttemptsIfPresent(), 0);
+  } finally {
+    process.chdir(previousCwd);
+  }
+});
+
+test("metric-enforcer does not emit backpressure when the run is aborted during analysis", async () => {
+  const previousCwd = process.cwd();
+  const tempRepo = await mkdtemp(join(tmpdir(), "metric-enforcer-aborted-analysis-test-"));
+
+  try {
+    process.chdir(tempRepo);
+    await execFileAsync("git", ["init"]);
+    await writeFile("sample.ts", "export const x = 1;\n", "utf8");
+    await writeFlakyAnalyzerConfig(1, 100);
+
+    const abortController = new AbortController();
+    const ctx: TestContext = { hasUI: true, signal: abortController.signal, ui: { notify() {} } };
+    const fakePi = new FakePi();
+    metricEnforcer(fakePi as never);
+
+    await fakePi.emit("agent_start", ctx);
+    await writeFile("sample.ts", "export const x = 2;\n", "utf8");
+    const agentEnd = fakePi.emit("agent_end", ctx);
+    await waitForAnalyzerAttempt();
+    abortController.abort();
+    await agentEnd;
+
+    assert.equal(fakePi.getSentCustomMessages().length, 0);
   } finally {
     process.chdir(previousCwd);
   }
@@ -1010,23 +1066,27 @@ test("metric-enforcer happy path with disabled analyzer reports successful check
  * Fake analyzer that records every invocation in `attempts.log` and fails until it has been called
  * `succeedFromAttempt` times, so tests can drive the analysis retry loop.
  */
-function createFlakyAnalyzerArgs(succeedFromAttempt: number): string[] {
+function createFlakyAnalyzerArgs(succeedFromAttempt: number, delayMilliseconds = 0): string[] {
+  const writeResult =
+    "const arg=process.argv.find((value)=>value.startsWith('--output-file='));" +
+    "const out=arg.split('=')[1];" +
+    "fs.mkdirSync('.pi/metricEnforcer',{recursive:true});" +
+    "fs.writeFileSync(out,JSON.stringify({data:{nodes:[{name:'root',type:'Folder',children:[{name:'sample.ts',type:'File',attributes:{complexity:99},children:[]}]}]}}));";
+  const delayedWriteResult = delayMilliseconds === 0 ? writeResult : `setTimeout(()=>{${writeResult}},${delayMilliseconds});`;
+
   return [
     "-e",
     "const fs=require('fs');" +
       "fs.appendFileSync('attempts.log','x');" +
       "const attempts=fs.readFileSync('attempts.log','utf8').length;" +
       `if(attempts<${succeedFromAttempt})process.exit(1);` +
-      "const arg=process.argv.find((value)=>value.startsWith('--output-file='));" +
-      "const out=arg.split('=')[1];" +
-      "fs.mkdirSync('.pi/metricEnforcer',{recursive:true});" +
-      "fs.writeFileSync(out,JSON.stringify({data:{nodes:[{name:'root',type:'Folder',children:[{name:'sample.ts',type:'File',attributes:{complexity:99},children:[]}]}]}}));",
+      delayedWriteResult,
     "--",
     "--output-file=.pi/metricEnforcer/cachedAnalysis.cc.json",
   ];
 }
 
-async function writeFlakyAnalyzerConfig(succeedFromAttempt: number): Promise<void> {
+async function writeFlakyAnalyzerConfig(succeedFromAttempt: number, delayMilliseconds = 0): Promise<void> {
   await mkdir(".pi/metricEnforcer", { recursive: true });
   await writeFile(
     ".pi/metricEnforcer/metric-enforcer.config.json",
@@ -1037,7 +1097,7 @@ async function writeFlakyAnalyzerConfig(succeedFromAttempt: number): Promise<voi
           ccsh: {
             enabled: true,
             command: "node",
-            args: createFlakyAnalyzerArgs(succeedFromAttempt),
+            args: createFlakyAnalyzerArgs(succeedFromAttempt, delayMilliseconds),
           },
         },
         backpressure: {
@@ -1060,6 +1120,24 @@ async function writeFlakyAnalyzerConfig(succeedFromAttempt: number): Promise<voi
 
 async function countAnalyzerAttempts(): Promise<number> {
   return (await readFile("attempts.log", "utf8")).length;
+}
+
+async function countAnalyzerAttemptsIfPresent(): Promise<number> {
+  try {
+    return await countAnalyzerAttempts();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
+    throw error;
+  }
+}
+
+async function waitForAnalyzerAttempt(): Promise<void> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if ((await countAnalyzerAttemptsIfPresent()) > 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+
+  throw new Error("Timed out waiting for the analyzer to start.");
 }
 
 test("metric-enforcer retries a failing analysis and keeps the gate silent once it succeeds", async () => {

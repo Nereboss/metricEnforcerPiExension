@@ -244,6 +244,13 @@ function clearTrackingAndMarkNextAgentStartAsNewCycle(): void {
   shouldResetTrackingOnNextAgentStart = true;
 }
 
+function shouldSkipAbortedAgentRun(ctx: ExtensionHandlerContext): boolean {
+  if (ctx.signal?.aborted !== true) return false;
+
+  clearTrackingAndMarkNextAgentStartAsNewCycle();
+  return true;
+}
+
 function addTouchedFilesToTracking(files: readonly string[]): void {
   for (const filePath of files) {
     cumulativeAgentTouchedFiles.add(filePath);
@@ -534,6 +541,7 @@ export default function metricEnforcer(pi: ExtensionAPI) {
 
   pi.on("agent_end", async (_event, ctx) => {
     if (!isMetricEnforcerActive) return;
+    if (shouldSkipAbortedAgentRun(ctx)) return;
     if (!(await ensureGitRepositoryAvailable(ctx))) return;
 
     try {
@@ -544,7 +552,7 @@ export default function metricEnforcer(pi: ExtensionAPI) {
 
       const loadedConfig = await loadConfigWithAppliedLogLevel(ctx, "agent end");
 
-      if (loadedConfig === undefined) return;
+      if (loadedConfig === undefined || shouldSkipAbortedAgentRun(ctx)) return;
 
       logInfo(formatMessageForTouchedFiles(changedByAgentThisTurn), configuredLogLevel, ctx);
 
@@ -583,7 +591,7 @@ export default function metricEnforcer(pi: ExtensionAPI) {
         ctx,
       );
 
-      if (orchestrationResult === undefined) return;
+      if (orchestrationResult === undefined || shouldSkipAbortedAgentRun(ctx)) return;
 
       logInfo(
         orchestrationResult.enabledAnalyzers.length === 0
